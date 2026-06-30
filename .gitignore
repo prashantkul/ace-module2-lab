@@ -71,3 +71,11 @@ config/*.yml
 # Misc
 .playwright-mcp/
 cypress/screenshots/
+
+# --- CodeMender CI/CD lab artifacts (Module 2) ---
+cm
+cm-linux
+cm-mac
+cm-security-report.json
+.codemender/
+*.cm.log
