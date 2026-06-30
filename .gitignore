@@ -79,3 +79,4 @@ cm-mac
 cm-security-report.json
 .codemender/
 *.cm.log
+.cm_project

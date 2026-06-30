@@ -117,8 +117,28 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set -uo pipefail
-          echo "Generating + applying patch for finding ${{ steps.triage.outputs.top_finding_id }} ..."
-          cm fix "${{ steps.triage.outputs.top_finding_id }}" --auto-apply -y 2>&1 | tee "$RUNNER_TEMP/cm-fix.cm.log"
+          FID="${{ steps.triage.outputs.top_finding_id }}"
+          echo "Generating + applying patch for finding $FID ..."
+          cm fix "$FID" --auto-apply -y 2>&1 | tee "$RUNNER_TEMP/cm-fix.cm.log" || true
+
+          # In a non-interactive CI shell, `cm fix` prints the patch but may not
+          # write it to disk (its "Apply these changes? [y/N]" prompt reads EOF).
+          # If no tracked source under $SCAN_PATH changed, extract cm's printed
+          # diff and git-apply it deterministically.
+          CHANGED="$(git status --porcelain -- "$SCAN_PATH" | grep -vE '\.cm_project' || true)"
+          if [ -z "$CHANGED" ]; then
+            echo "cm did not write the patch to disk — extracting + applying its printed diff."
+            python3 .github/scripts/extract_cm_diff.py "$RUNNER_TEMP/cm-fix.cm.log" > "$RUNNER_TEMP/cm.patch"
+            if [ -s "$RUNNER_TEMP/cm.patch" ]; then
+              git apply -p1 --directory="$SCAN_PATH" "$RUNNER_TEMP/cm.patch" \
+                || git apply -p1 --directory="$SCAN_PATH" --3way "$RUNNER_TEMP/cm.patch" \
+                || echo "::warning::Could not apply the extracted patch cleanly."
+            else
+              echo "::warning::No diff found in cm fix output."
+            fi
+          fi
+          echo "----- working-tree changes under $SCAN_PATH -----"
+          git status --porcelain -- "$SCAN_PATH" || true
 
       - name: Open Remediation Pull Request
         id: pr
@@ -162,6 +182,7 @@ jobs:
             > **red** until this remediation lands — that is the deployment gate.
 
       - name: Security Gate (fail on HIGH/CRITICAL)
+        if: always()          # the deploy decision must run even if the PR step had issues
         run: |
           set -uo pipefail
           COUNT="${{ steps.triage.outputs.high_critical }}"
