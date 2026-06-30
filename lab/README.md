@@ -6,8 +6,8 @@ it finds a HIGH/CRITICAL vulnerability, publishes a machine-readable report, and
 opens a pull request that **patches the bug automatically**.
 
 Your target application is **OWASP Juice Shop** — a deliberately vulnerable
-web app — and the canonical bug you'll watch CodeMender catch and fix is the
-**SQL injection in `routes/login.ts`**.
+web app. CodeMender will surface several HIGH/CRITICAL bugs in `routes/` (SQL
+injection, file-upload XXE / Zip-Slip, …) and auto-patch the most severe ones.
 
 ---
 
@@ -100,9 +100,9 @@ Open `.github/workflows/codemender-pipeline.yml`. It runs on every push/PR to
 | **Init** | `cm init` | Mints the local CodeMender identity key |
 | **Scan** | `cm find routes -y` | Uploads `routes/` and runs the server-side scan |
 | **Report** | `cm report -f json` | Exports findings → uploaded as the **`codemender-report`** artifact |
-| **Triage** | `cm_triage.py` | Counts HIGH/CRITICAL, picks the finding to fix |
-| **Patch** | `cm fix <id> --auto-apply -y` | Generates and applies the security patch |
-| **PR** | `peter-evans/create-pull-request` | Opens the autonomous remediation PR |
+| **Triage** | `cm_triage.py` | Counts HIGH/CRITICAL, ranks them, selects the top **N** (default 3) to fix |
+| **Patch** | `cm fix <id>` (looped over top-N) | Generates + applies a security patch for each selected finding |
+| **PR** | `peter-evans/create-pull-request` | Opens one remediation PR containing all the patches |
 | **Gate** | (exit 1 if HIGH/CRITICAL) | Turns the run **red** and blocks deployment |
 
 > **Why no `--fail-on=high,critical` flag?** The real `cm` has no such flag — a
@@ -122,11 +122,14 @@ Trigger a run one of two ways:
 Then open the **Actions** tab and watch the run. Expect it to:
 
 1. Install `cm` and initialize cleanly.
-2. Scan `routes/` and find the **CRITICAL SQL injection** in `routes/login.ts`.
+2. Scan `routes/` and surface multiple **HIGH/CRITICAL** findings (e.g. SQL
+   injection in `routes/login.ts` / `routes/search.ts`, file-upload XXE /
+   Zip-Slip in `routes/fileUpload.ts`).
 3. Upload the `codemender-report` artifact.
-4. Open a PR titled **"CodeMender: autonomous security remediation"**.
-5. **Fail red** at the Security Gate (this is correct — `main` is vulnerable
-   until the remediation PR is merged).
+4. Open a PR titled **"CodeMender: autonomous security remediation"** with
+   patches for the top-N findings.
+5. **Fail red** at the Security Gate (correct — `main` stays blocked until the
+   findings are resolved).
 
 ---
 
@@ -137,12 +140,29 @@ Then open the **Actions** tab and watch the run. Expect it to:
 | 1 | **Workflow executes** — clean `cm` install + init | Actions run log: "Install CodeMender CLI" + "Initialize CodeMender Workspace" steps green |
 | 2 | **Pipeline gating (fail-safe)** — a HIGH/CRITICAL bug turns the run red and blocks deploy | Run is **red**; "Security Gate" step shows `error::Deployment blocked` |
 | 3 | **Artifact generation** — `codemender-report` with `cm-security-report.json` | Run **Summary** → Artifacts → `codemender-report` (downloadable) |
-| 4 | **Autonomous remediation** — agent-opened branch/PR with the fix | **Pull requests** tab: PR from `codemender/auto-remediation` containing the `routes/login.ts` patch |
+| 4 | **Autonomous remediation** — agent-opened branch/PR with the fix | **Pull requests** tab: PR from `codemender/auto-remediation` with structural patch(es) to `routes/` (e.g. a SQL injection rewritten as a parameterized query) |
 
 The job **Summary** also shows a "CodeMender Triage" table (severity counts +
 the finding selected for remediation) — a quick at-a-glance for grading.
 
 ---
+
+## Part B (exploration) — observe the non-determinism
+
+CodeMender runs **server-side**, so the scan is *probabilistic*: the exact set
+of findings and which one ranks #1 can shift between runs. Make that visible:
+
+1. Trigger the pipeline **3 times** (Actions → **Run workflow**, or push small commits).
+2. From each run's **Summary**, download the **`codemender-report`** artifact.
+3. Compare them — note how the finding count, severities, and the remediated
+   set vary run-to-run, and how each run's remediation PR differs.
+
+**Reflect:** why does an AI security agent return different results on identical
+code? What does that imply for using one as a *blocking* deployment gate?
+> Hint: the gate keys off **severity counts**, not a specific finding — so it
+> stays reliable as a fail-safe even as individual findings shift. The lab fixes
+> the **top N** (default 3) findings per run so coverage doesn't hinge on which
+> single bug happened to rank first.
 
 ## Troubleshooting
 

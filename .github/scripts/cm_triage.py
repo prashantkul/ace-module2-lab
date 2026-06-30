@@ -108,22 +108,40 @@ def main() -> int:
         except (TypeError, ValueError):
             return 0
 
+    try:
+        limit = max(1, int(os.environ.get("CM_FIX_LIMIT", "3") or "3"))
+    except ValueError:
+        limit = 3
+
     blocking = [f for f in findings if severity_of(f) in BLOCKING]
     blocking.sort(key=lambda f: (RANK.get(severity_of(f), 0), conf(f)), reverse=True)
-    top = blocking[0] if blocking else {}
+    selected = blocking[:limit]   # the top-N HIGH/CRITICAL we auto-remediate
 
-    top_id = str(_get(top, "FindingID", "finding_id", "id", default=""))
-    top_title = str(_get(top, "Title", "title", default="(untitled)"))
-    top_sev = severity_of(top) or "-"
-    top_file = str(_get(top, "FilePath", "file_path", "file", default="-"))
+    def fid(f):
+        return str(_get(f, "FindingID", "finding_id", "id", default=""))
+
+    def ftitle(f):
+        return str(_get(f, "Title", "title", default="(untitled)"))
+
+    def ffile(f):
+        return str(_get(f, "FilePath", "file_path", "file", default="-"))
+
+    top = selected[0] if selected else {}
+    fix_ids = " ".join(i for i in (fid(f) for f in selected) if i)
+    fix_summary = "\n".join(
+        f"- **{severity_of(f)}** — {ftitle(f)}  \n  `{ffile(f)}` (`{fid(f)}`)" for f in selected
+    ) or "_none_"
 
     # --- step outputs ---
     set_output("total", str(len(findings)))
     set_output("high_critical", str(high_critical))
-    set_output("top_finding_id", top_id)
-    set_output("top_finding_title", top_title)
-    set_output("top_finding_severity", top_sev)
-    set_output("top_finding_file", top_file)
+    set_output("fix_ids", fix_ids)                       # space-separated top-N ids to fix
+    set_output("fix_count", str(len(selected)))
+    set_output("fix_summary", fix_summary)               # markdown list for the PR body
+    set_output("top_finding_id", fid(top))               # first one (PR title fallback)
+    set_output("top_finding_title", ftitle(top))
+    set_output("top_finding_severity", severity_of(top) or "-")
+    set_output("top_finding_file", ffile(top))
 
     # --- job summary ---
     gate = "❌ BLOCK (HIGH/CRITICAL present)" if high_critical else "✅ PASS"
@@ -141,20 +159,15 @@ def main() -> int:
     ]
     if counts["OTHER"]:
         lines.append(f"| ❔ OTHER | {counts['OTHER']} |")
-    if top_id:
-        lines += [
-            "",
-            "### 🎯 Selected for autonomous remediation",
-            "",
-            f"- **{top_sev}** — {top_title}",
-            f"- `{top_file}`",
-            f"- finding id: `{top_id}`",
-        ]
+    if selected:
+        lines += ["", f"### 🎯 Selected for autonomous remediation (top {len(selected)})", ""]
+        for f in selected:
+            lines.append(f"- **{severity_of(f)}** — {ftitle(f)} — `{ffile(f)}` (`{fid(f)}`)")
     write_summary("\n".join(lines))
 
     # Console echo (visible in the step log).
     print(f"total={len(findings)} high_critical={high_critical} "
-          f"top_finding_id={top_id or '(none)'} severity={top_sev}")
+          f"fix_count={len(selected)} fix_ids={fix_ids or '(none)'}")
     return 0
 
 

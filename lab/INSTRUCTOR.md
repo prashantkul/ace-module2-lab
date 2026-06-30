@@ -10,7 +10,8 @@ instructions are in [`README.md`](./README.md).
 | Path | Purpose |
 |---|---|
 | `.github/workflows/codemender-pipeline.yml` | The guardrail pipeline (provided, working) |
-| `.github/scripts/cm_triage.py` | Parses `cm report -f json` → severity counts + gate decision + the finding to auto-fix |
+| `.github/scripts/cm_triage.py` | Parses `cm report -f json` → severity counts + gate decision + the top-N findings to auto-fix (`CM_FIX_LIMIT`, default 3) |
+| `.github/scripts/extract_cm_diff.py` | Extracts cm's printed unified diff so CI can `git apply` it (cm doesn't always write the patch itself in a non-interactive shell) |
 | `lab/README.md` | Student lab guide |
 | `lab/INSTRUCTOR.md` | This file |
 | `lab/publish-cm-release.sh` | Helper: publish the `cm` binary as a Release asset on a repo |
@@ -86,7 +87,7 @@ concrete, checkable evidence:
 | 1 | **Workflow execution** | Actions run exists; "Install CodeMender CLI" + "Initialize CodeMender Workspace" + "CodeMender Scan" steps are green (clean install & auth) | 25 |
 | 2 | **Pipeline gating (fail-safe)** | The run is **red** because of the **"Security Gate"** step (`::error ::Deployment blocked … HIGH/CRITICAL`). A *red from an earlier crash* does **not** count | 25 |
 | 3 | **Artifact generation** | Run **Summary → Artifacts** has **`codemender-report`** containing `cm-security-report.json`, and it's non-empty JSON | 25 |
-| 4 | **Autonomous remediation** | A PR exists from branch **`codemender/auto-remediation`**, authored by the Actions bot, whose diff changes `routes/login.ts` (parameterizes the SQL query / removes string interpolation) | 25 |
+| 4 | **Autonomous remediation** | A PR from branch **`codemender/auto-remediation`**, authored by the Actions bot, whose diff applies structural security fix(es) to `routes/` — e.g. a SQL injection rewritten as a parameterized query, or file-upload XXE/Zip-Slip hardened. Grade on *substance*, not a specific file (the scan is non-deterministic; the PR carries the top-N fixes). | 25 |
 
 **Fast grading path:** open the run's **Summary** page — the "CodeMender Triage"
 table shows severity counts and the remediated finding, and the Artifacts
@@ -112,21 +113,27 @@ gh pr list --repo "$R" --head codemender/auto-remediation \
 
 ---
 
-## 4. Expected finding (so you know what "correct" looks like)
+## 4. Expected findings (so you know what "correct" looks like)
 
-`routes/login.ts` builds a SQL query by interpolating request input:
+Scanning `routes/` reliably yields **~9–11 HIGH/CRITICAL** findings. The exact
+set + ranking vary (server-side, non-deterministic); the pipeline auto-fixes the
+top **N** (default 3, set by `CM_FIX_LIMIT`). The common ones:
 
-```ts
-models.sequelize.query(
-  `SELECT * FROM Users WHERE email = '${req.body.email || ''}' AND password = '${security.hash(req.body.password || '')}' ...`
-)
-```
+- **SQL injection** in `routes/login.ts` / `routes/search.ts` — a string-built
+  `sequelize.query(...)`. Correct fix = a **parameterized query** with bind
+  `replacements`. Real `cm fix` output observed on `search.ts`:
 
-CodeMender flags this as **CRITICAL SQL injection**. A correct `cm fix`
-remediation replaces the string-built query with a **parameterized query**
-(Sequelize `replacements`/bind parameters), preserving behavior. Because the
-agent runs server-side, exact wording/line ranges can vary between runs — grade
-on *substance* (the injection is parameterized), not on an exact diff.
+  ```diff
+  - models.sequelize.query(`SELECT * FROM Products WHERE ((name LIKE '%${criteria}%' OR description LIKE '%${criteria}%') ...)`)
+  + models.sequelize.query('SELECT * FROM Products WHERE ((name LIKE :criteria OR description LIKE :criteria) ...)', { replacements: { criteria: `%${criteria}%` } })
+  ```
+- **File-upload** XXE / Zip-Slip / YAML-DOS in `routes/fileUpload.ts` — fix adds
+  DOCTYPE/ENTITY rejection, a `startsWith(destDir)` path-traversal guard, and
+  `yaml.safeLoad`.
+
+Grade on **substance** (the vulnerability class is actually neutralized), not on
+an exact file or diff — runs differ. `CM_FIX_LIMIT` in the workflow controls how
+many findings each run remediates (1 = minimal single-fix lab).
 
 ---
 
