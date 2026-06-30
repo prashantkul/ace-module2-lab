@@ -91,8 +91,8 @@ Then enable the pipeline's ability to open a remediation PR:
 
 ## Step 3 — Understand the guardrail
 
-Open `.github/workflows/codemender-pipeline.yml`. It runs on every push/PR to
-`main`. The steps map directly onto real `cm` commands:
+Open `.github/workflows/codemender-pipeline.yml`. It runs on every push to
+`main` (and on manual dispatch). The steps map directly onto real `cm` commands:
 
 | Stage | Command | What it does |
 |---|---|---|
@@ -113,11 +113,27 @@ Open `.github/workflows/codemender-pipeline.yml`. It runs on every push/PR to
 
 ## Step 4 — Trigger and test the agent
 
-Trigger a run one of two ways:
+Trigger a run any of these ways:
 
-- **Push** any commit to `main` (e.g., edit this file), **or**
-- Go to the **Actions** tab → **CodeMender CI/CD Guardrail** → **Run workflow**
-  (the `workflow_dispatch` button).
+- **Manual — UI (easiest):** **Actions** tab → **CodeMender CI/CD Guardrail**
+  in the left sidebar → **Run workflow** ▸ → choose `main` → **Run workflow**.
+  This is the `workflow_dispatch` trigger — best for re-running on the *same*
+  commit (e.g. the Part B exercise).
+- **Manual — CLI:** with the [GitHub CLI](https://cli.github.com):
+  ```bash
+  gh workflow run codemender-pipeline.yml --repo <owner>/<repo> --ref main
+  ```
+- **Push:** commit anything to `main` — the `on: push` trigger fires automatically.
+
+| Trigger | How | Opens a fix PR? |
+|---|---|---|
+| `workflow_dispatch` | Run workflow button / `gh workflow run` | ✅ yes |
+| `push` to `main` | any commit to `main` | ✅ yes |
+
+> The `pull_request` trigger is intentionally **not** enabled (it created
+> branch-less red runs on the bot's own remediation PR and GitHub approval
+> prompts). The workflow keeps the `github.event_name != 'pull_request'` guards,
+> so you can re-add a `pull_request:` trigger to gate PRs if you want.
 
 Then open the **Actions** tab and watch the run. Expect it to:
 
