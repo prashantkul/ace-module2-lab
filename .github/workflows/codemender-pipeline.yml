@@ -22,6 +22,10 @@ name: CodeMender CI/CD Guardrail
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:          # doc-only changes shouldn't trigger a ~20-min scan
+      - '**.md'
+      - 'lab/**'
+      - '.gitignore'
   workflow_dispatch:
   # Note: no `pull_request:` trigger — it produced branch-less red runs on the
   # bot-authored remediation PR and GitHub "action_required" approval prompts.
