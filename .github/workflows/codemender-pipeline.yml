@@ -128,7 +128,7 @@ jobs:
           cm find "$SCAN_PATH" -y 2>&1 | tee "$RUNNER_TEMP/cm-find.cm.log"
 
       - name: Export Security Report (cm report -f json)
-        if: always()
+        if: ${{ always() && steps.scan.conclusion != 'skipped' }}
         run: |
           set -uo pipefail
           cm report -f json > "$RUNNER_TEMP/cm-security-report.json" 2> "$RUNNER_TEMP/cm-report.err" || true
@@ -137,7 +137,7 @@ jobs:
           echo
 
       - name: Upload Security Report
-        if: always()
+        if: ${{ always() && steps.scan.conclusion != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: codemender-report
@@ -216,6 +216,13 @@ jobs:
         if: always()          # the deploy decision must run even if the PR step had issues
         run: |
           set -uo pipefail
+          # Fail CLOSED: no completed scan/triage means no evidence the code is
+          # safe — that blocks deployment too. (A gate that passes green when
+          # the scanner crashed would wave unscanned code through.)
+          if [ "${{ steps.triage.outcome }}" != "success" ]; then
+            echo "::error title=Deployment blocked::Security scan did not complete (triage outcome: ${{ steps.triage.outcome }}). Failing closed — no scan, no deploy."
+            exit 1
+          fi
           COUNT="${{ steps.triage.outputs.high_critical }}"
           COUNT="${COUNT:-0}"
           if [ "$COUNT" -gt 0 ]; then
