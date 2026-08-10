@@ -53,6 +53,9 @@ env:
   # How many of the top-ranked HIGH/CRITICAL findings to auto-remediate in one
   # run (all land in a single PR). Set to 1 for a minimal single-fix lab.
   CM_FIX_LIMIT: "3"
+  # "true" when the GCP_SA_KEY secret is provisioned. Hoisted here because the
+  # `secrets` context is not available inside step-level `if:` expressions.
+  HAS_GCP_SA_KEY: ${{ secrets.GCP_SA_KEY != '' }}
 
 jobs:
   codemender-security:
@@ -71,13 +74,13 @@ jobs:
       # exactly what `cm` reads. The SA behind the key needs aiplatform.user AND
       # serviceusage.serviceUsageConsumer (see the header comment).
       - name: Authenticate to Google Cloud (ADC)
-        if: ${{ secrets.GCP_SA_KEY != '' }}
+        if: ${{ env.HAS_GCP_SA_KEY == 'true' }}
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Warn if ADC is not configured
-        if: ${{ secrets.GCP_SA_KEY == '' }}
+        if: ${{ env.HAS_GCP_SA_KEY != 'true' }}
         run: |
           echo "::warning title=No GCP_SA_KEY secret::cm will fall back to the v0.1.0 binary's embedded build key (shared quota). Provision the secret per lab/README.md Step 2."
 
