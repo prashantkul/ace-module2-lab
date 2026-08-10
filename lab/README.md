@@ -24,7 +24,7 @@ injection, file-upload XXE / Zip-Slip, …) and auto-patch the most severe ones.
 
 CodeMender is a **cloud service with a local executor**, not an on-device
 scanner. The `cm` binary is a thin client: when you run `cm find`, it **uploads
-your in-scope source** to `codemender.pa.googleapis.com`, where a server-side AI
+your in-scope source** to Google's CodeMender service, where a server-side AI
 agent reasons about vulnerabilities and drives the patch. Practically:
 
 - **Your code leaves the machine.** Only point `cm` at code you're allowed to
@@ -45,7 +45,7 @@ This repository is your lab template. It already contains:
 
 - `.github/workflows/codemender-pipeline.yml` — the guardrail workflow.
 - `.github/scripts/cm_triage.py` — turns the JSON report into a gate decision.
-- A private **Release** (`cm-cli-v0.1.0`) holding the `cm` binary, which the
+- A private **Release** (`cm-cli-v0.2.0`) holding the `cm` binary, which the
   workflow downloads in CI.
 
 > If you're an instructor setting this up for students, see
@@ -97,11 +97,10 @@ Then enable the pipeline's ability to open a remediation PR:
 6. Select **Read and write permissions**, and check
    **Allow GitHub Actions to create and approve pull requests**. Save.
 
-> **Note (honest detail):** the lab's `cm v0.1.0` binary also carries an
-> embedded build key, so the pipeline still runs (on shared quota, with a
-> warning) if `GCP_SA_KEY` is missing. Wiring real ADC now means the lab
-> matches how `cm` actually authenticates, with **zero changes later** — and
-> you practice secret provisioning, a core DevSecOps skill.
+> **Note:** `cm` v0.2.0 authenticates **only** via ADC — there is no fallback.
+> If `GCP_SA_KEY` is missing or empty, the pipeline fails fast at the
+> "Check CI credentials" step with an error pointing back here, instead of
+> failing cryptically mid-scan.
 
 ### Running `cm` locally instead? (sandbox accounts)
 
@@ -126,7 +125,7 @@ Open `.github/workflows/codemender-pipeline.yml`. It runs on every push to
 | Stage | Command | What it does |
 |---|---|---|
 | **Auth** | `google-github-actions/auth` | Writes the `GCP_SA_KEY` JSON to an ADC file and exports `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` — the env `cm` reads |
-| **Install** | `gh release download cm-cli-v0.1.0` | Pulls the `cm` binary (private Release asset) using the built-in `GITHUB_TOKEN` |
+| **Install** | `gh release download cm-cli-v0.2.0` | Pulls the `cm` binary (private Release asset) using the built-in `GITHUB_TOKEN` |
 | **Init** | `cm init` | Mints the local CodeMender identity key |
 | **Scan** | `cm find routes -y` | Uploads `routes/` and runs the server-side scan |
 | **Report** | `cm report -f json` | Exports findings → uploaded as the **`codemender-report`** artifact |
@@ -235,9 +234,9 @@ code? What does that imply for using one as a *blocking* deployment gate?
   Confirm `SCAN_PATH` is `routes` and that `routes/login.ts` still contains the
   string-built SQL query. (CodeMender runs server-side, so exact findings can
   vary run-to-run.)
-- **`RESOURCE_EXHAUSTED` / quota errors** → runs without `GCP_SA_KEY` share
-  the binary's embedded key; stagger your runs or retry. With `GCP_SA_KEY`
-  set, usage is attributed to the key's own project instead.
+- **`RESOURCE_EXHAUSTED` / quota errors** → usage is attributed to the
+  service account's project; if the whole class shares one CI project,
+  stagger your runs or retry.
 - **Scan takes a while** → `cm find` runs a multi-round server-side agent;
   several minutes is normal. The job timeout is 45 minutes.
 

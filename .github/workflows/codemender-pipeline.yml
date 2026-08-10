@@ -12,15 +12,14 @@ name: CodeMender CI/CD Guardrail
 # Auth (see lab/README.md):
 #   * GCP_SA_KEY      — JSON key of a service account holding BOTH
 #     roles/aiplatform.user AND roles/serviceusage.serviceUsageConsumer.
-#     The real `cm` authenticates to Google via Application Default
+#     `cm` (v0.2.0) authenticates to Google via Application Default
 #     Credentials (ADC) and attributes quota to GOOGLE_CLOUD_PROJECT; the
 #     auth step below writes the ADC file and exports both env vars.
 #     NOTE: aiplatform.user alone is NOT enough — it does not include
 #     serviceusage.services.use, so without serviceUsageConsumer ADC fails
 #     with "Grant the caller the roles/serviceusage.serviceUsageConsumer
-#     role". The lab's v0.1.0 binary still carries an embedded build key,
-#     so the pipeline degrades gracefully (with a warning) if the secret
-#     is missing.
+#     role". A missing/empty secret fails the run fast at the credential
+#     check, with a pointer to lab/README.md Step 2.
 #   * GITHUB_TOKEN    — built-in; used to download the private `cm` release
 #     asset and to open the remediation pull request.
 # ---------------------------------------------------------------------------
@@ -48,7 +47,7 @@ env:
   SCAN_PATH: routes
   # The `cm` binary is published as a private Release asset on THIS repo
   # (see lab/INSTRUCTOR.md) and pulled in with the built-in GITHUB_TOKEN.
-  CM_RELEASE_TAG: cm-cli-v0.1.0
+  CM_RELEASE_TAG: cm-cli-v0.2.0
   CM_ASSET: cm-linux
   # How many of the top-ranked HIGH/CRITICAL findings to auto-remediate in one
   # run (all land in a single PR). Set to 1 for a minimal single-fix lab.
@@ -81,8 +80,8 @@ jobs:
               || echo "::warning::GCP_SA_KEY is set but is not valid JSON — the auth step will likely fail."
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning title=No GCP_SA_KEY secret::cm will fall back to the v0.1.0 binary's embedded build key (shared quota). Provision the secret per lab/README.md Step 2."
-            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::error title=Missing CI credential::The GCP_SA_KEY secret is unset or EMPTY. cm authenticates via ADC and cannot run without it — provision the secret per lab/README.md Step 2 (and verify the key file is non-empty before 'gh secret set')."
+            exit 1
           fi
 
       # Writes the ADC credential file and exports GOOGLE_APPLICATION_CREDENTIALS
@@ -114,19 +113,18 @@ jobs:
       - name: Initialize CodeMender Workspace (cm init)
         run: |
           set -uo pipefail
-          # Mints the local Tink identity keyset at ~/.codemender/identity.key.
-          cm init -y 2>/dev/null || cm init 2>/dev/null || true
-          if [ -f "$HOME/.codemender/identity.key" ]; then
-            echo "CodeMender identity initialized."
-          else
-            echo "::warning::No identity.key found after cm init; cm may create it on first use."
-          fi
+          # Creates ~/.codemender/ (default config, state DB, patch storage).
+          cm init || true
+          # Non-fatal environment self-check — surfaces auth/config problems
+          # here instead of minutes into the scan.
+          cm init --verify || echo "::warning::cm init --verify reported problems (see log above)."
+          ls -la "$HOME/.codemender/" 2>/dev/null || echo "::warning::~/.codemender was not created by cm init."
 
       - name: CodeMender Scan (cm find)
         id: scan
         run: |
           set -uo pipefail
-          echo "Scanning '$SCAN_PATH' (source is uploaded to codemender.pa.googleapis.com)..."
+          echo "Scanning '$SCAN_PATH' (in-scope source is uploaded to Google's CodeMender service)..."
           cm find "$SCAN_PATH" -y 2>&1 | tee "$RUNNER_TEMP/cm-find.cm.log"
 
       - name: Export Security Report (cm report -f json)
@@ -160,7 +158,7 @@ jobs:
           echo "Remediating top finding(s): ${{ steps.triage.outputs.fix_ids }}"
           for FID in ${{ steps.triage.outputs.fix_ids }}; do
             echo "::group::cm fix $FID"
-            cm fix "$FID" --auto-apply -y 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
+            cm fix "$FID" -y 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
             # In a non-interactive CI shell, `cm fix` reliably PRINTS the patch but
             # may not write it (its "Apply these changes? [y/N]" prompt reads EOF).
             # Extract the printed diff and apply it ONLY if it applies cleanly — so

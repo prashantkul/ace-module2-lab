@@ -15,7 +15,7 @@ instructions are in [`README.md`](./README.md).
 | `lab/README.md` | Student lab guide |
 | `lab/INSTRUCTOR.md` | This file |
 | `lab/publish-cm-release.sh` | Helper: publish the `cm` binary as a Release asset on a repo |
-| Release `cm-cli-v0.1.0` | Holds `cm-linux` (runner) + `cm-mac` (local), downloaded in CI |
+| Release `cm-cli-v0.2.0` | Holds `cm-linux` (runner; `cm-mac` optional), downloaded in CI |
 
 The target app is **OWASP Juice Shop**, imported as a single clean commit. The
 16 upstream Juice Shop workflows were removed so the Actions tab shows **only**
@@ -28,20 +28,20 @@ the CodeMender guardrail.
 The workflow installs `cm` with:
 
 ```bash
-gh release download cm-cli-v0.1.0 --repo "$GITHUB_REPOSITORY" --pattern cm-linux
+gh release download cm-cli-v0.2.0 --repo "$GITHUB_REPOSITORY" --pattern cm-linux
 ```
 
 The built-in `GITHUB_TOKEN` can only read releases **on the same repo**. So
-**every student repo needs its own `cm-cli-v0.1.0` release** holding the
+**every student repo needs its own `cm-cli-v0.2.0` release** holding the
 `cm-linux` asset. GitHub does **not** copy releases when a repo is forked or
 created from a template — you must publish it per repo.
 
-Use the helper (run it once per student repo, pointing at your local `cm`
-binary):
+Get the current binary (public download), then run the helper once per repo:
 
 ```bash
-# From a machine that has the cm binary:
-./lab/publish-cm-release.sh <owner>/<repo> /path/to/cm-linux
+curl -L -o cm-linux-amd64.zip "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm%3Astable%3Acm-linux-amd64.zip:download?alt=media"
+unzip cm-linux-amd64.zip           # -> cm
+./lab/publish-cm-release.sh <owner>/<repo> ./cm
 ```
 
 **Distribution options:**
@@ -128,11 +128,10 @@ For **each** repo students will use (or the template before distribution):
 - [ ] (Optional) Branch protection on `main` so the red gate actually blocks
       merges — makes the "deployment blocked" outcome tangible.
 
-> **Heads-up on quota:** runs without `GCP_SA_KEY` fall back to the binary's
-> embedded key and share server-side quota — expect occasional
-> `RESOURCE_EXHAUSTED` in a large cohort. With `GCP_SA_KEY`, usage lands on
-> the key's project; one shared CI project can still throttle a big class, so
-> split sections across CI projects if that bites.
+> **Heads-up on quota:** all usage lands on the `GCP_SA_KEY` project
+> (`cm` 0.2.0 has no fallback auth — a missing/empty secret fails the run at
+> the credential check). One shared CI project can throttle a big class
+> (`RESOURCE_EXHAUSTED`), so split sections across CI projects if that bites.
 
 ---
 
