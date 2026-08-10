@@ -59,21 +59,80 @@ student repos, then loop `publish-cm-release.sh` over them.
 
 ## 2. Per-repo setup checklist
 
+### 2a. The CI service account (one per class)
+
+`cm` authenticates via **ADC** and attributes quota to `GOOGLE_CLOUD_PROJECT`.
+The pipeline's auth step consumes a **`GCP_SA_KEY`** repo secret holding a
+service-account JSON key. Create the SA once, in a project you control:
+
+```bash
+PROJECT=<ci-project-id>
+SA=codemender-ci@$PROJECT.iam.gserviceaccount.com
+
+gcloud services enable aiplatform.googleapis.com --project=$PROJECT
+gcloud iam service-accounts create codemender-ci \
+  --project=$PROJECT --display-name="CodeMender CI"
+
+# BOTH roles are required. aiplatform.user does NOT include
+# serviceusage.services.use, so without serviceUsageConsumer ADC fails with
+# "Grant the caller the roles/serviceusage.serviceUsageConsumer role".
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member="serviceAccount:$SA" --role="roles/aiplatform.user"
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member="serviceAccount:$SA" --role="roles/serviceusage.serviceUsageConsumer"
+
+# Key -> repo secret (loop the gh line over student repos), then shred the file
+gcloud iam service-accounts keys create /tmp/cm-ci-key.json --iam-account=$SA
+gh secret set GCP_SA_KEY < /tmp/cm-ci-key.json --repo <owner>/<repo>
+rm -f /tmp/cm-ci-key.json
+```
+
+Notes:
+
+- **No org-level IAM is needed** — both grants are project-scoped.
+- If key creation is blocked by the org policy
+  `iam.managed.disableServiceAccountKeyCreation` (Argolis default), add a
+  project-scoped exception, or switch the workflow's auth step to keyless
+  **Workload Identity Federation**.
+- Students' sandbox roles can't create service accounts or keys, so the
+  instructor provisions this (students can still paste the key JSON into
+  their repo secret themselves if you hand it out).
+
+### 2b. Sandbox accounts running `cm` locally (Elevate)
+
+If students get sandboxes from the **Elevate** provisioner and run
+`gcloud auth application-default login` themselves, the provisioned role set
+must include `serviceusage.serviceUsageConsumer` too — same reason as above.
+In the provisioner's `.env`:
+
+```
+ELEVATE_CM_IAM_ROLE=roles/aiplatform.user,roles/iam.roleViewer,roles/serviceusage.serviceUsageConsumer
+```
+
+then redeploy. **Already-provisioned users don't pick this up** — either grant
+the role one-off (`gcloud projects add-iam-policy-binding <project>
+--member="user:<sandbox-email>" --role="roles/serviceusage.serviceUsageConsumer"`)
+or release + re-provision them.
+
+### 2c. Checklist
+
 For **each** repo students will use (or the template before distribution):
 
 - [ ] Publish the `cm` release: `./lab/publish-cm-release.sh <owner>/<repo> <cm-linux>`
+- [ ] Set the **`GCP_SA_KEY`** secret:
+      `gh secret set GCP_SA_KEY < cm-ci-key.json --repo <owner>/<repo>`
 - [ ] **Settings → Actions → General → Workflow permissions:**
       "Read and write permissions" **and**
       "Allow GitHub Actions to create and approve pull requests" — both ON.
       (Required for the autonomous PR; without it `create-pull-request` errors.)
-- [ ] Students add the **`GOOGLE_API_KEY`** secret (they do this themselves).
 - [ ] (Optional) Branch protection on `main` so the red gate actually blocks
       merges — makes the "deployment blocked" outcome tangible.
 
-> **Heads-up on shared quota:** until the GA per-user API key is enforced, all
-> runs authenticate with the binary's embedded key and share server-side quota.
-> For a large cohort, expect occasional `RESOURCE_EXHAUSTED`; have students
-> stagger runs or retry.
+> **Heads-up on quota:** runs without `GCP_SA_KEY` fall back to the binary's
+> embedded key and share server-side quota — expect occasional
+> `RESOURCE_EXHAUSTED` in a large cohort. With `GCP_SA_KEY`, usage lands on
+> the key's project; one shared CI project can still throttle a big class, so
+> split sections across CI projects if that bites.
 
 ---
 

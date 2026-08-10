@@ -10,11 +10,17 @@ name: CodeMender CI/CD Guardrail
 #     -> open remediation PR -> SECURITY GATE (fail red on HIGH/CRITICAL)
 #
 # Auth (see lab/README.md):
-#   * GOOGLE_API_KEY  — the (forthcoming) CodeMender API key. Provisioned by
-#     students as a repo secret and passed to `cm` below. The current v0.1.0
-#     binary authenticates with an embedded build key, so the pipeline runs
-#     even before the GA API enforces this key — it is wired now so the lab
-#     matches the GA model with zero changes later.
+#   * GCP_SA_KEY      — JSON key of a service account holding BOTH
+#     roles/aiplatform.user AND roles/serviceusage.serviceUsageConsumer.
+#     The real `cm` authenticates to Google via Application Default
+#     Credentials (ADC) and attributes quota to GOOGLE_CLOUD_PROJECT; the
+#     auth step below writes the ADC file and exports both env vars.
+#     NOTE: aiplatform.user alone is NOT enough — it does not include
+#     serviceusage.services.use, so without serviceUsageConsumer ADC fails
+#     with "Grant the caller the roles/serviceusage.serviceUsageConsumer
+#     role". The lab's v0.1.0 binary still carries an embedded build key,
+#     so the pipeline degrades gracefully (with a warning) if the secret
+#     is missing.
 #   * GITHUB_TOKEN    — built-in; used to download the private `cm` release
 #     asset and to open the remediation pull request.
 # ---------------------------------------------------------------------------
@@ -60,6 +66,21 @@ jobs:
         with:
           fetch-depth: 0          # full history so cm can evaluate code context
 
+      # Writes the ADC credential file and exports GOOGLE_APPLICATION_CREDENTIALS
+      # + GOOGLE_CLOUD_PROJECT (from the key's project_id) for all later steps —
+      # exactly what `cm` reads. The SA behind the key needs aiplatform.user AND
+      # serviceusage.serviceUsageConsumer (see the header comment).
+      - name: Authenticate to Google Cloud (ADC)
+        if: ${{ secrets.GCP_SA_KEY != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Warn if ADC is not configured
+        if: ${{ secrets.GCP_SA_KEY == '' }}
+        run: |
+          echo "::warning title=No GCP_SA_KEY secret::cm will fall back to the v0.1.0 binary's embedded build key (shared quota). Provision the secret per lab/README.md Step 2."
+
       - name: Install CodeMender CLI (cm)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -89,8 +110,6 @@ jobs:
 
       - name: CodeMender Scan (cm find)
         id: scan
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set -uo pipefail
           echo "Scanning '$SCAN_PATH' (source is uploaded to codemender.pa.googleapis.com)..."
@@ -122,8 +141,6 @@ jobs:
         id: fix
         # Open a remediation PR on push or manual run; PR events only scan+gate.
         if: ${{ github.event_name != 'pull_request' && steps.triage.outputs.fix_ids != '' }}
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set -uo pipefail
           echo "Remediating top finding(s): ${{ steps.triage.outputs.fix_ids }}"

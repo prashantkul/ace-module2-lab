@@ -29,6 +29,9 @@ agent reasons about vulnerabilities and drives the patch. Practically:
 
 - **Your code leaves the machine.** Only point `cm` at code you're allowed to
   share. (Juice Shop is open source, so we're fine.)
+- Auth is standard Google Cloud **ADC** (Application Default Credentials),
+  with usage billed to the project in `GOOGLE_CLOUD_PROJECT` — in CI the
+  workflow's auth step provides both (Step 2).
 - Findings + patches are stored locally in `~/.codemender/` and read back with
   `cm report`.
 - The scan is scoped to **`routes/`** in this lab — small (well under cm's
@@ -69,12 +72,23 @@ This repository is your lab template. It already contains:
 
 ## Step 2 — Provision the secret
 
-CodeMender will (in its GA API form) authenticate with a **single API key**.
-Add it as a repository secret:
+CodeMender authenticates to Google Cloud with **Application Default
+Credentials (ADC)** and bills its usage to the project in
+`GOOGLE_CLOUD_PROJECT`. In CI that means one repository secret: a service
+account's JSON key. The identity behind it needs **two** project-level roles:
+
+| Role | Why |
+|---|---|
+| `roles/aiplatform.user` | Call the CodeMender / Vertex AI service |
+| `roles/serviceusage.serviceUsageConsumer` | Let ADC use the project as its quota project — `aiplatform.user` does **not** include `serviceusage.services.use`, and without it auth fails with *"Grant the caller the roles/serviceusage.serviceUsageConsumer role"* |
+
+Add the secret (your instructor provides the key — sandbox accounts can't
+mint service-account keys themselves):
 
 1. Go to **Settings → Secrets and variables → Actions**.
 2. Click **New repository secret**.
-3. Name: **`GOOGLE_API_KEY`**  — Value: your Google API key.
+3. Name: **`GCP_SA_KEY`**  — Value: the full contents of the service-account
+   JSON key file.
 4. Save.
 
 Then enable the pipeline's ability to open a remediation PR:
@@ -83,11 +97,26 @@ Then enable the pipeline's ability to open a remediation PR:
 6. Select **Read and write permissions**, and check
    **Allow GitHub Actions to create and approve pull requests**. Save.
 
-> **Note (honest detail):** the lab's `cm v0.1.0` binary authenticates with an
-> embedded build key, so the pipeline will run even if `GOOGLE_API_KEY` isn't
-> enforced yet. We wire the secret in now so the lab matches the GA model with
-> **zero changes later** — and so you practice secret provisioning, a core
-> DevSecOps skill.
+> **Note (honest detail):** the lab's `cm v0.1.0` binary also carries an
+> embedded build key, so the pipeline still runs (on shared quota, with a
+> warning) if `GCP_SA_KEY` is missing. Wiring real ADC now means the lab
+> matches how `cm` actually authenticates, with **zero changes later** — and
+> you practice secret provisioning, a core DevSecOps skill.
+
+### Running `cm` locally instead? (sandbox accounts)
+
+If you try `cm` on your own machine or Cloud Shell with a provisioned sandbox
+account, mint ADC yourself:
+
+```bash
+gcloud auth application-default login
+export GOOGLE_CLOUD_PROJECT=<your-sandbox-project-id>
+```
+
+Your sandbox **user** needs the same two roles on the project. If the login
+fails with *"Caller does not have required permission to use project …
+Grant the caller the roles/serviceusage.serviceUsageConsumer role"*, your
+sandbox predates that role being granted automatically — see Troubleshooting.
 
 ## Step 3 — Understand the guardrail
 
@@ -96,6 +125,7 @@ Open `.github/workflows/codemender-pipeline.yml`. It runs on every push to
 
 | Stage | Command | What it does |
 |---|---|---|
+| **Auth** | `google-github-actions/auth` | Writes the `GCP_SA_KEY` JSON to an ADC file and exports `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` — the env `cm` reads |
 | **Install** | `gh release download cm-cli-v0.1.0` | Pulls the `cm` binary (private Release asset) using the built-in `GITHUB_TOKEN` |
 | **Init** | `cm init` | Mints the local CodeMender identity key |
 | **Scan** | `cm find routes -y` | Uploads `routes/` and runs the server-side scan |
@@ -182,6 +212,21 @@ code? What does that imply for using one as a *blocking* deployment gate?
 
 ## Troubleshooting
 
+- **`gcloud auth application-default login` fails with "Grant the caller the
+  roles/serviceusage.serviceUsageConsumer role"** → your account (or the CI
+  service account) is missing that role on the project. This is *not* fixed by
+  `roles/aiplatform.user` — that role doesn't include
+  `serviceusage.services.use`. Ask your instructor to run:
+  ```bash
+  gcloud projects add-iam-policy-binding <project-id> \
+    --member="user:<your-sandbox-email>" \
+    --role="roles/serviceusage.serviceUsageConsumer"
+  ```
+  (or to release + re-provision your sandbox, which now grants it
+  automatically), then retry the login.
+- **"Authenticate to Google Cloud" step fails** → the `GCP_SA_KEY` secret must
+  contain the *entire* service-account JSON key (starts with `{`), not a path
+  or an API-key string.
 - **"GitHub Actions is not permitted to create or approve pull requests"** →
   you missed Step 2.5/2.6 (the workflow-permissions toggle).
 - **`gh release download` fails / `cm-linux` not found** → the `cm` release
@@ -190,9 +235,9 @@ code? What does that imply for using one as a *blocking* deployment gate?
   Confirm `SCAN_PATH` is `routes` and that `routes/login.ts` still contains the
   string-built SQL query. (CodeMender runs server-side, so exact findings can
   vary run-to-run.)
-- **`RESOURCE_EXHAUSTED` / quota errors** → in this lab everyone shares the
-  binary's embedded key; stagger your runs or retry. (The GA per-user
-  `GOOGLE_API_KEY` removes this.)
+- **`RESOURCE_EXHAUSTED` / quota errors** → runs without `GCP_SA_KEY` share
+  the binary's embedded key; stagger your runs or retry. With `GCP_SA_KEY`
+  set, usage is attributed to the key's own project instead.
 - **Scan takes a while** → `cm find` runs a multi-round server-side agent;
   several minutes is normal. The job timeout is 45 minutes.
 
