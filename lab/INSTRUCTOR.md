@@ -14,14 +14,14 @@ instructions are in [`README.md`](./README.md).
 | `.github/scripts/extract_cm_diff.py` | Extracts cm's printed unified diff so CI can `git apply` it (cm doesn't always write the patch itself in a non-interactive shell) |
 | `lab/README.md` | Student lab guide |
 | `lab/INSTRUCTOR.md` | This file |
-| `lab/publish-cm-release.sh` | Helper: publish the `cm` binary as a Release asset on a repo |
+| `lab/bin/cm-linux` | The `cm` binary, vendored — every template copy works with zero install steps |
+| `lab/publish-cm-release.sh` | Legacy helper: publish `cm` as a Release asset (only for pre-vendoring student copies) |
 | `lab/setup-wif.sh` | One-time: workload-identity pool + GitHub OIDC provider + SA binding (keyless auth) |
 | `lab/wif-class-access.sh` | Open/close class access (fixed-repo-name admission); prints the 3-variable handout |
-| `lab/provision-student-repos.sh` | Batch-configure repos you administer (variables + release + workflow perms) |
+| `lab/provision-student-repos.sh` | Batch-configure repos you administer (variables + audience secret + workflow perms) |
 | `lab/DESIGN.md` | Design doc for the keyless (WIF) auth architecture |
 | `lab/QWIKLABS.md` | Paste-ready lab write-up + verification for Qwiklabs / Skills Boost |
 | `.github/workflows/wif-auth-test.yml` | Manual smoke test proving WIF works against the live cm backend |
-| Release `cm-cli-v0.2.0` | Holds `cm-linux` (runner; `cm-mac` optional), downloaded in CI |
 
 The target app is **OWASP Juice Shop**, imported as a single clean commit. The
 16 upstream Juice Shop workflows were removed so the Actions tab shows **only**
@@ -29,37 +29,30 @@ the CodeMender guardrail.
 
 ---
 
-## 1. The one non-obvious dependency: distributing `cm`
+## 1. Distributing `cm`: vendored in the repo
 
-The workflow installs `cm` with:
+The `cm` binary is **committed at `lab/bin/cm-linux`** (~29 MB) and the
+workflow just copies it onto `PATH`. Every fork/template copy therefore works
+with **zero install steps** — this replaced the earlier per-repo Release
+download, which broke every student copy because GitHub does **not** copy
+Releases on fork or "Use this template" (the release existed only on the
+original repo).
 
-```bash
-gh release download cm-cli-v0.2.0 --repo "$GITHUB_REPOSITORY" --pattern cm-linux
-```
-
-The built-in `GITHUB_TOKEN` can only read releases **on the same repo**. So
-**every student repo needs its own `cm-cli-v0.2.0` release** holding the
-`cm-linux` asset. GitHub does **not** copy releases when a repo is forked or
-created from a template — you must publish it per repo.
-
-Get the current binary (public download), then run the helper once per repo:
+To update the binary when a new `cm` version ships (public download):
 
 ```bash
 curl -L -o cm-linux-amd64.zip "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm%3Astable%3Acm-linux-amd64.zip:download?alt=media"
 unzip cm-linux-amd64.zip           # -> cm
-./lab/publish-cm-release.sh <owner>/<repo> ./cm
+install -m 0755 cm lab/bin/cm-linux && git add lab/bin/cm-linux
 ```
 
-**Distribution options:**
+(`.gitignore` ignores stray `cm-linux` files everywhere else but explicitly
+allows `lab/bin/cm-linux`.)
 
-| Approach | How | Trade-off |
-|---|---|---|
-| **Per-repo release** (default) | Run `publish-cm-release.sh` against each student repo | One-time loop; keeps the single-secret model |
-| **Central release + PAT** | Host `cm` on one repo; students add a read-only PAT secret and the workflow downloads cross-repo | Avoids per-repo publish, but adds a second secret |
-| **Vendored binary** | Commit `cm-linux` into each repo and skip the download step | Simplest CI, but bloats the repo with a 29 MB binary |
-
-For a class via **GitHub Classroom**, accept the assignment to generate the
-student repos, then loop `publish-cm-release.sh` over them.
+**Legacy:** student copies created before the binary was vendored still run
+the old release-download step; either have them re-copy the template, or
+publish the release onto their repo with
+`./lab/publish-cm-release.sh <owner>/<repo> ./lab/bin/cm-linux`.
 
 ---
 
@@ -146,15 +139,29 @@ or release + re-provision them.
 **Once per class (GCP side, instructor only):**
 
 - [ ] SA + roles + pool/provider: §2a one-time setup, then `lab/setup-wif.sh`
+- [ ] Set the class **audience** on the provider (a static pre-generated
+      string; doubles as the `WIF_AUDIENCE` repo secret):
+
+      ```bash
+      gcloud iam workload-identity-pools providers update-oidc github-oidc \
+        --project=<project> --location=global \
+        --workload-identity-pool=github-actions \
+        --allowed-audiences="<the pre-generated string>"
+      ```
+
+      Share the value only on the gated lab page / handout — it's the one
+      thing keeping strangers who name a repo `ace-module2-lab` out while
+      access is open. If it ever leaks, re-run the command with a new string.
 - [ ] Open access before each cohort: `./lab/wif-class-access.sh <project> open`
       (and `close` after — don't leave it open between cohorts)
 
 **For each student repo (self-serve on personal accounts, or batch with
 `lab/provision-student-repos.sh` when you control the repos):**
 
-- [ ] Publish the `cm` release: `./lab/publish-cm-release.sh <owner>/<repo> <cm-linux>`
 - [ ] Set the three **WIF repo variables** (README Step 2 — plain variables,
       identical class-wide, printed by `wif-class-access.sh open`)
+- [ ] Set the **`WIF_AUDIENCE` repo secret** (same page, Secrets tab — value
+      from the handout)
 - [ ] **Settings → Actions → General → Workflow permissions:**
       "Read and write permissions" **and**
       "Allow GitHub Actions to create and approve pull requests" — both ON.

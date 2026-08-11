@@ -18,6 +18,11 @@ name: CodeMender CI/CD Guardrail
 #       GCP_WIF_PROVIDER  — projects/<n>/locations/global/workloadIdentityPools/…/providers/…
 #       GCP_SA_EMAIL      — the CI service account to impersonate
 #       GCP_QUOTA_PROJECT — project that absorbs Vertex AI quota/billing
+#     plus ONE repo SECRET:
+#       WIF_AUDIENCE      — class-shared audience string the provider requires
+#                           in the OIDC token (`aud` claim). Keeps strangers
+#                           who merely name a repo ace-module2-lab from riding
+#                           the fixed-name admission rule. From the lab page.
 #     The SA needs BOTH roles/aiplatform.user AND
 #     roles/serviceusage.serviceUsageConsumer — aiplatform.user does NOT
 #     include serviceusage.services.use, and without the second role ADC
@@ -25,8 +30,7 @@ name: CodeMender CI/CD Guardrail
 #     role". `cm` (v0.2.0) reads ADC + GOOGLE_CLOUD_PROJECT, both exported
 #     by the auth step. Proven against the real cm backend by
 #     .github/workflows/wif-auth-test.yml.
-#   * GITHUB_TOKEN    — built-in; used to download the private `cm` release
-#     asset and to open the remediation pull request.
+#   * GITHUB_TOKEN    — built-in; used to open the remediation pull request.
 # ---------------------------------------------------------------------------
 
 on:
@@ -51,10 +55,10 @@ env:
   # Scoped scan target. Kept well under cm's ~10 MB per-scan upload limit and
   # contains the canonical CRITICAL finding (SQL injection in routes/login.ts).
   SCAN_PATH: routes
-  # The `cm` binary is published as a private Release asset on THIS repo
-  # (see lab/INSTRUCTOR.md) and pulled in with the built-in GITHUB_TOKEN.
-  CM_RELEASE_TAG: cm-cli-v0.2.0
-  CM_ASSET: cm-linux
+  # The `cm` binary ships vendored in the repo, so template copies work with
+  # zero extra setup (GitHub does NOT copy Releases on fork/template — a
+  # release-download step here broke every student copy).
+  CM_BUNDLED: lab/bin/cm-linux
   # How many of the top-ranked HIGH/CRITICAL findings to auto-remediate in one
   # run (all land in a single PR). Set to 1 for a minimal single-fix lab.
   CM_FIX_LIMIT: "3"
@@ -81,14 +85,16 @@ jobs:
           [ -n "${{ vars.GCP_WIF_PROVIDER }}" ]  || MISSING="$MISSING GCP_WIF_PROVIDER"
           [ -n "${{ vars.GCP_SA_EMAIL }}" ]      || MISSING="$MISSING GCP_SA_EMAIL"
           [ -n "${{ vars.GCP_QUOTA_PROJECT }}" ] || MISSING="$MISSING GCP_QUOTA_PROJECT"
+          [ -n "${{ secrets.WIF_AUDIENCE }}" ]   || MISSING="$MISSING WIF_AUDIENCE(Secrets-tab)"
           if [ -n "$MISSING" ]; then
-            echo "::error title=Missing WIF configuration::Repo variable(s) not set:$MISSING. cm authenticates keylessly via Workload Identity Federation — add the variables per lab/README.md Step 2 (your instructor provides the values; they are not secrets)."
+            echo "::error title=Missing WIF configuration::Not set:$MISSING. cm authenticates keylessly via Workload Identity Federation — add the three VARIABLES and the WIF_AUDIENCE SECRET per lab/README.md Step 2 (values come from your instructor / lab page)."
             exit 1
           fi
-          echo "WIF variables present:"
+          echo "WIF configuration present:"
           echo "  provider: ${{ vars.GCP_WIF_PROVIDER }}"
           echo "  SA:       ${{ vars.GCP_SA_EMAIL }}"
           echo "  project:  ${{ vars.GCP_QUOTA_PROJECT }}"
+          echo "  audience: (secret set)"
 
       # Exchanges the runner's OIDC token for short-lived SA credentials,
       # writes the ADC credential file, and exports
@@ -100,20 +106,21 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SA_EMAIL }}
           project_id: ${{ vars.GCP_QUOTA_PROJECT }}
+          # Class-shared audience: the provider only accepts OIDC tokens
+          # minted with this `aud` value (second factor next to the repo name).
+          audience: ${{ secrets.WIF_AUDIENCE }}
 
       - name: Install CodeMender CLI (cm)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          if [ ! -f "$CM_BUNDLED" ]; then
+            echo "::error title=cm binary missing::$CM_BUNDLED not found in this repo. Copy the template repo fully (it ships the binary) — see lab/INSTRUCTOR.md."
+            exit 1
+          fi
+          # Copy out of the checkout so later steps get a stable `cm` on PATH
+          # and the working tree stays clean for the remediation diff.
           mkdir -p "$RUNNER_TEMP/cmbin"
-          echo "Downloading $CM_ASSET from release $CM_RELEASE_TAG ..."
-          gh release download "$CM_RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$CM_ASSET" \
-            --dir "$RUNNER_TEMP/cmbin"
-          mv "$RUNNER_TEMP/cmbin/$CM_ASSET" "$RUNNER_TEMP/cmbin/cm"
-          chmod +x "$RUNNER_TEMP/cmbin/cm"
+          install -m 0755 "$CM_BUNDLED" "$RUNNER_TEMP/cmbin/cm"
           echo "$RUNNER_TEMP/cmbin" >> "$GITHUB_PATH"     # cm on PATH for later steps
           "$RUNNER_TEMP/cmbin/cm" --version || true
 

@@ -8,7 +8,9 @@ and it makes verification a matter of opening URLs.
 
 The three variable values below are already filled in for the current
 shared project (they are also printed by `wif-class-access.sh open` —
-update them here if the project ever changes). There is no student roster —
+update them here if the project ever changes). The `WIF_AUDIENCE` secret
+value is deliberately **not** printed in this file (it sits in a public
+repo): put it on the gated lab page only. There is no student roster —
 admission is by the **fixed repo name** `ace-module2-lab`, and the course
 team opens access before the session and closes it after. The shared,
 allow-listed GCP project already exists — Qwiklabs provisions nothing.
@@ -34,18 +36,24 @@ allow-listed GCP project already exists — Qwiklabs provisions nothing.
    | `GCP_SA_EMAIL` | `codemender-ci@elevate-cm-01-rt9xt4.iam.gserviceaccount.com` |
    | `GCP_QUOTA_PROJECT` | `elevate-cm-01-rt9xt4` |
 
-3. **Allow the pipeline to open pull requests.** **Settings → Actions →
+3. **Add the one secret.** On the same page, switch to the **Secrets tab →
+   New repository secret**. Name: `WIF_AUDIENCE`, value: **shown on your lab
+   page**. Unlike the variables, this one *is* a secret — it's what keeps
+   people outside the course from using the class's Google Cloud access, so
+   don't post it anywhere public.
+
+4. **Allow the pipeline to open pull requests.** **Settings → Actions →
    General → Workflow permissions:** select **Read and write permissions**
    and check **Allow GitHub Actions to create and approve pull requests**.
    Save.
 
 ### Run — about 20 minutes, mostly waiting
 
-4. Open the **Actions** tab → **CodeMender CI/CD Guardrail** → **Run
+5. Open the **Actions** tab → **CodeMender CI/CD Guardrail** → **Run
    workflow**. Watch it scan your code, generate a report, auto-patch the
    top findings, and open a pull request.
 
-5. **The run ends with a red ❌ — that is success.** The Security Gate found
+6. **The run ends with a red ❌ — that is success.** The Security Gate found
    HIGH/CRITICAL vulnerabilities and blocked "deployment." A green run would
    mean the guardrail failed to guard.
 
@@ -80,13 +88,18 @@ The pipeline runs by itself on every push to `main` that touches code
 
 If something fails instead:
 
-- **Run stops at "Check WIF configuration"** → a variable is missing or
-  misspelled (step 2 — Variables tab, not Secrets).
+- **Run stops at "Check WIF configuration"** → a variable (step 2, Variables
+  tab) or the `WIF_AUDIENCE` secret (step 3, Secrets tab) is missing or
+  misspelled — the error says which.
+- **Auth step fails at token exchange ("invalid audience" or similar)** →
+  the `WIF_AUDIENCE` value has a typo — re-paste it from the lab page.
 - **Auth step fails with "unable to impersonate"** → your repo isn't named
   exactly `ace-module2-lab`, or class access isn't open — contact the course
   team.
-- **"not permitted to create or approve pull requests"** → step 3 was
+- **"not permitted to create or approve pull requests"** → step 4 was
   missed.
+- **"cm binary missing"** → your repo copy lacks `lab/bin/cm-linux` — delete
+  it and re-create from the template (the binary ships inside).
 
 ---
 
@@ -123,10 +136,15 @@ security remediation".
   before the session, `close` after. While open, any repo named
   `ace-module2-lab` is admitted — that's the deliberate trade for zero
   per-student ops, so don't leave it open between cohorts.
-- **Template:** commit the `cm-linux` binary into the Qwiklabs template (and
-  swap the release-download step for `chmod +x`) — GitHub doesn't copy
-  Releases to student copies, and this removes the most confusing failure
-  mode. Binary URL: INSTRUCTOR.md §1.
+- **Template:** the `cm` binary ships committed at `lab/bin/cm-linux`, so
+  student copies need no release, no download, no install (GitHub doesn't
+  copy Releases to template copies — that used to be the most confusing
+  failure mode, now gone). Updating the binary: INSTRUCTOR.md §1.
+- **Audience secret:** `WIF_AUDIENCE` is a static pre-generated string set
+  once on the WIF provider (INSTRUCTOR.md §2c). Print it **only** on the
+  gated lab page — it's what keeps non-students out while access is open.
+  If it ever leaks, one `gcloud … update-oidc --allowed-audiences=<new>`
+  invalidates the old value; update the lab page to match.
 - **Quota:** all usage bills to the shared allow-listed project. Budget ~2
   scans + 3 fix sessions per student; if a cohort throttles
   (`RESOURCE_EXHAUSTED`), add another allow-listed project per section —

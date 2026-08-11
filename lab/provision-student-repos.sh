@@ -1,50 +1,49 @@
 #!/usr/bin/env bash
 # Batch-provision student repos for the CodeMender lab (keyless / WIF design).
 #
-# With WIF there is NO secret to distribute — students on personal GitHub
-# accounts can fully self-serve (paste 3 variables, flip workflow permissions,
-# run publish-cm-release.sh). Use THIS script when the instructor controls the
-# repos anyway (GitHub Classroom / org) and wants to do it in one sweep.
+# Students on personal GitHub accounts can fully self-serve (paste 3 variables
+# + 1 secret, flip workflow permissions). Use THIS script when the instructor
+# controls the repos anyway (GitHub Classroom / org) and wants one sweep.
+#
+# The `cm` binary ships vendored in the repo (lab/bin/cm-linux), so there is
+# no release to publish and nothing else to install.
 #
 # For each repo it:
 #   1. Sets the three WIF repo VARIABLES (GCP_WIF_PROVIDER, GCP_SA_EMAIL,
 #      GCP_QUOTA_PROJECT) — copied from a template repo you already configured.
-#   2. Publishes the `cm` binary release (releases don't copy on fork/template).
+#   2. Sets the WIF_AUDIENCE repo SECRET (value via -a; secrets can't be read
+#      back from the template, so it must be passed in).
 #   3. Sets workflow permissions to read/write + "allow PR creation".
-#   4. Verifies all three and prints a summary.
+#   4. Verifies and prints a summary.
 #
 # GCP-side admission is separate and roster-free: repos named ace-module2-lab
 # are admitted whenever class access is open (lab/wif-class-access.sh open).
 #
 # Usage:
-#   ./lab/provision-student-repos.sh -b ./cm-linux owner/repo1 [owner/repo2 ...]
-#   ./lab/provision-student-repos.sh -b ./cm-linux -f repos.txt
+#   ./lab/provision-student-repos.sh -a <audience> owner/repo1 [owner/repo2 ...]
+#   ./lab/provision-student-repos.sh -a <audience> -f repos.txt
 #
 # Options:
 #   -t OWNER/REPO   Template repo to copy the three WIF variables from
 #                   (default: prashantkul/ace-module2-lab).
-#   -b FILE         cm-linux binary for the release (required unless --skip-release).
+#   -a AUDIENCE     Value for the WIF_AUDIENCE secret (printed by
+#                   lab/wif-class-access.sh open; required).
 #   -f FILE         File listing target repos, one <owner>/<repo> per line
 #                   ('#' comments and blank lines ignored).
-#   --skip-release  Don't publish the cm release.
 #
-# Requires: gh authenticated with ADMIN access to every target repo, python3.
+# Requires: gh authenticated with ADMIN access to every target repo.
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 TEMPLATE="prashantkul/ace-module2-lab"
-CM_BIN=""
+AUDIENCE=""
 REPOS_FILE=""
-SKIP_RELEASE=0
 REPOS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -t) TEMPLATE="${2:-}"; shift 2 ;;
-    -b) CM_BIN="${2:-}"; shift 2 ;;
+    -a) AUDIENCE="${2:-}"; shift 2 ;;
     -f) REPOS_FILE="${2:-}"; shift 2 ;;
-    --skip-release) SKIP_RELEASE=1; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "error: unknown option: $1" >&2; exit 2 ;;
     *) REPOS+=("$1"); shift ;;
@@ -53,12 +52,8 @@ done
 
 # ---- validate inputs before touching anything remote ----------------------
 fail=0
-if [[ "$SKIP_RELEASE" -eq 0 ]]; then
-  if [[ -z "$CM_BIN" ]]; then
-    echo "error: -b <cm-linux> is required (or pass --skip-release)" >&2; fail=1
-  elif [[ ! -f "$CM_BIN" ]]; then
-    echo "error: cm binary not found: $CM_BIN" >&2; fail=1
-  fi
+if [[ -z "$AUDIENCE" ]]; then
+  echo "error: -a <audience> is required (wif-class-access.sh open prints it)" >&2; fail=1
 fi
 
 if [[ -n "$REPOS_FILE" ]]; then
@@ -90,7 +85,7 @@ for V in GCP_WIF_PROVIDER GCP_SA_EMAIL GCP_QUOTA_PROJECT; do
 done
 
 echo
-echo "Provisioning ${#REPOS[@]} repo(s) — no secrets involved anywhere."
+echo "Provisioning ${#REPOS[@]} repo(s)."
 echo
 
 declare -A RESULT
@@ -109,13 +104,11 @@ for R in "${REPOS[@]}"; do
   done
   [[ "$ok" -eq 1 ]] && echo "   WIF variables: set"
 
-  # -- 2. cm release ----------------------------------------------------------
-  if [[ "$SKIP_RELEASE" -eq 0 ]]; then
-    if "$SCRIPT_DIR/publish-cm-release.sh" "$R" "$CM_BIN" >/dev/null; then
-      echo "   cm release: published"
-    else
-      echo "   cm release: FAILED"; ok=0
-    fi
+  # -- 2. the audience secret -------------------------------------------------
+  if gh secret set WIF_AUDIENCE --repo "$R" --body "$AUDIENCE"; then
+    echo "   WIF_AUDIENCE secret: set"
+  else
+    echo "   WIF_AUDIENCE secret: FAILED"; ok=0
   fi
 
   # -- 3. workflow permissions ------------------------------------------------
@@ -131,18 +124,14 @@ for R in "${REPOS[@]}"; do
   if [[ "$ok" -eq 1 ]]; then
     v_vars=$(gh variable list --repo "$R" --json name --jq '.[].name' 2>/dev/null \
                | grep -cE '^(GCP_WIF_PROVIDER|GCP_SA_EMAIL|GCP_QUOTA_PROJECT)$' || true)
+    v_sec=$(gh secret list --repo "$R" --json name --jq '.[].name' 2>/dev/null \
+               | grep -cx 'WIF_AUDIENCE' || true)
     v_perms=$(gh api "repos/$R/actions/permissions/workflow" \
                 --jq 'select(.default_workflow_permissions=="write" and .can_approve_pull_request_reviews==true) | "ok"' 2>/dev/null || true)
-    v_rel="ok"
-    if [[ "$SKIP_RELEASE" -eq 0 ]]; then
-      v_rel=$(gh release view "${CM_RELEASE_TAG:-cm-cli-v0.2.0}" --repo "$R" \
-                --json assets --jq '.assets[].name' 2>/dev/null | grep -cx 'cm-linux' || true)
-      [[ "$v_rel" == "1" ]] && v_rel="ok" || v_rel=""
-    fi
-    if [[ "$v_vars" == "3" && "$v_perms" == "ok" && "$v_rel" == "ok" ]]; then
+    if [[ "$v_vars" == "3" && "$v_sec" == "1" && "$v_perms" == "ok" ]]; then
       echo "   verify: all green"
     else
-      echo "   verify: MISMATCH (vars=$v_vars/3 perms=${v_perms:-no} release=${v_rel:-no})"; ok=0
+      echo "   verify: MISMATCH (vars=$v_vars/3 secret=$v_sec/1 perms=${v_perms:-no})"; ok=0
     fi
   fi
 

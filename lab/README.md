@@ -46,12 +46,12 @@ This repository is your lab template. It already contains:
 
 - `.github/workflows/codemender-pipeline.yml` — the guardrail workflow.
 - `.github/scripts/cm_triage.py` — turns the JSON report into a gate decision.
-- A private **Release** (`cm-cli-v0.2.0`) holding the `cm` binary, which the
-  workflow downloads in CI.
+- `lab/bin/cm-linux` — the `cm` binary, vendored right in the repo so every
+  copy of this template works without downloading anything.
 
 > If you're an instructor setting this up for students, see
-> [`INSTRUCTOR.md`](./INSTRUCTOR.md) first — there's per-repo setup
-> (the `cm` release + a repo setting) that must be done before students start.
+> [`INSTRUCTOR.md`](./INSTRUCTOR.md) first — there's one-time GCP setup and a
+> short per-repo checklist that must be done before students start.
 
 ---
 
@@ -79,8 +79,10 @@ Credentials (ADC)** and bills its usage to the project in
 **Workload Identity Federation (WIF)**: each pipeline run mints a short-lived
 GitHub OIDC token proving *which repository* it runs for, and Google exchanges
 it for temporary CI-service-account credentials — but **only if your repo is
-named exactly `ace-module2-lab`** and class access is open. Nothing here is
-confidential; there is nothing you could leak.
+named exactly `ace-module2-lab`**, class access is open, and the token was
+minted with the class **audience** string. The three variables aren't
+confidential; the audience is the one class-shared value you should treat as
+a secret (it goes in the Secrets tab and is masked in logs).
 
 1. **Check your repo name.** It must be exactly **`ace-module2-lab`** —
    the Google Cloud side admits pipelines by that fixed name.
@@ -95,7 +97,13 @@ confidential; there is nothing you could leak.
    | `GCP_SA_EMAIL` | The CI service account your pipeline impersonates |
    | `GCP_QUOTA_PROJECT` | The project that absorbs the Vertex AI usage |
 
-3. Enable the pipeline's ability to open a remediation PR:
+3. **Set one repository *secret*** — on the same settings page, switch to the
+   **Secrets tab → New repository secret** and add `WIF_AUDIENCE` with the
+   value your instructor provides. This is the class-shared audience string
+   Google's token exchange insists on; unlike the variables above, don't
+   post it anywhere public.
+
+4. Enable the pipeline's ability to open a remediation PR:
    go to **Settings → Actions → General → Workflow permissions**, select
    **Read and write permissions**, and check
    **Allow GitHub Actions to create and approve pull requests**. Save.
@@ -106,11 +114,14 @@ For the curious: the service account itself holds two project-level roles —
 alone lacks `serviceusage.services.use`).
 
 > **Fail-fast notes:**
-> - Missing/misspelled variables stop the run immediately at the
->   **"Check WIF configuration"** step with an error pointing back here.
-> - If the variables are right but the **auth step** fails with *"unable to
->   impersonate"*, either your repo isn't named exactly `ace-module2-lab`
->   (Step 2.1) or class access isn't open — ask your instructor.
+> - A missing variable or missing `WIF_AUDIENCE` secret stops the run
+>   immediately at the **"Check WIF configuration"** step with an error
+>   pointing back here.
+> - If the config is present but the **auth step** fails at token exchange
+>   (*"invalid audience"* or similar), the `WIF_AUDIENCE` value has a typo.
+> - If it fails with *"unable to impersonate"*, either your repo isn't named
+>   exactly `ace-module2-lab` (Step 2.1) or class access isn't open — ask
+>   your instructor.
 
 ### Running `cm` locally instead? (sandbox accounts)
 
@@ -135,7 +146,7 @@ Open `.github/workflows/codemender-pipeline.yml`. It runs on every push to
 | Stage | Command | What it does |
 |---|---|---|
 | **Auth** | `google-github-actions/auth` | Exchanges the run's GitHub OIDC token for short-lived service-account credentials (WIF), writes the ADC file, and exports `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` — the env `cm` reads |
-| **Install** | `gh release download cm-cli-v0.2.0` | Pulls the `cm` binary (private Release asset) using the built-in `GITHUB_TOKEN` |
+| **Install** | copy `lab/bin/cm-linux` onto `PATH` | The `cm` binary ships vendored in the repo — nothing is downloaded |
 | **Init** | `cm init` | Mints the local CodeMender identity key |
 | **Scan** | `cm find routes -y` | Uploads `routes/` and runs the server-side scan |
 | **Report** | `cm report -f json` | Exports findings → uploaded as the **`codemender-report`** artifact |
@@ -241,9 +252,12 @@ code? What does that imply for using one as a *blocking* deployment gate?
   *variables* is missing or misspelled — the error lists which. Note they're
   under the **Variables** tab, not Secrets.
 - **"GitHub Actions is not permitted to create or approve pull requests"** →
-  you missed Step 2.3 (the workflow-permissions toggle).
-- **`gh release download` fails / `cm-linux` not found** → the `cm` release
-  isn't published on *your* repo. Ask your instructor (see `INSTRUCTOR.md`).
+  you missed Step 2.4 (the workflow-permissions toggle).
+- **Auth step fails at token exchange ("invalid audience" or similar)** →
+  the `WIF_AUDIENCE` secret is missing or has a typo — re-paste it from the
+  instructor handout (Secrets tab).
+- **"cm binary missing" at the Install step** → your copy of the repo lacks
+  `lab/bin/cm-linux` — re-copy the template completely (it ships the binary).
 - **Run is green with 0 findings** → the scan didn't surface a HIGH/CRITICAL.
   Confirm `SCAN_PATH` is `routes` and that `routes/login.ts` still contains the
   string-built SQL query. (CodeMender runs server-side, so exact findings can

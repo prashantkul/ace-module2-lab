@@ -76,6 +76,7 @@ cypress/screenshots/
 cm
 cm-linux
 cm-mac
+!lab/bin/cm-linux
 cm-security-report.json
 .codemender/
 *.cm.log

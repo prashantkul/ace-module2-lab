@@ -8,11 +8,13 @@ The lab's CI pipeline authenticates to Google Cloud with **Workload Identity
 Federation (WIF)** instead of a distributed service-account key. Each workflow
 run exchanges a short-lived GitHub OIDC token — cryptographic proof of *which
 repository* is running — for temporary credentials of one shared CI service
-account. Admission is by **fixed repo name** (`ace-module2-lab`), behind a
-one-command open/close switch the course team flips around each cohort.
-**No long-lived credential exists anywhere in the design**, so there
-is nothing to hand out, nothing students can leak or exfiltrate, and nothing
-to rotate after the course.
+account. Admission is by **fixed repo name** (`ace-module2-lab`) **plus a
+class-shared audience string** the provider requires in the token's `aud`
+claim, behind a one-command open/close switch the course team flips around
+each cohort. **No long-lived credential exists anywhere in the design** —
+the audience is a static shared passphrase, not a credential: alone it grants
+nothing (a correctly-named repo must still mint a GitHub-attested OIDC token),
+and revoking it is one `gcloud` command, not a key rotation.
 
 Proven end-to-end against the live CodeMender backend by
 [`wif-auth-test.yml`](../.github/workflows/wif-auth-test.yml)
@@ -62,9 +64,9 @@ sequenceDiagram
     participant IAM as IAM Credentials<br/>SA: codemender-ci@…
     participant CM as cm CLI → Vertex AI<br/>(CodeMender backend)
 
-    R->>R: mint OIDC token<br/>(id-token: write)
+    R->>R: mint OIDC token<br/>(id-token: write,<br/>aud = WIF_AUDIENCE secret)
     R->>STS: exchange token
-    Note over STS: GATE 1 — admission rule<br/>assertion.repository ends with<br/>'/ace-module2-lab'
+    Note over STS: GATE 1 — admission rule<br/>aud == class audience AND<br/>assertion.repository ends with<br/>'/ace-module2-lab'
     STS->>IAM: federated token
     Note over IAM: GATE 2 — class-access switch<br/>pool-wide workloadIdentityUser<br/>grant (open/close)
     IAM->>R: short-lived SA access token (≤1 h)
@@ -72,14 +74,18 @@ sequenceDiagram
     Note over CM: GATE 3 — SA roles<br/>aiplatform.user +<br/>serviceusage.serviceUsageConsumer
 ```
 
-**Fixed-name admission + kill switch.** There is no per-student roster. The
-provider condition (`assertion.repository.endsWith('/ace-module2-lab')`)
-**is** the admission rule: any repo with the fixed lab name qualifies. Gate 2
-is a single pool-wide `workloadIdentityUser` grant that
-`lab/wif-class-access.sh` toggles — `open` before a cohort, `close` after.
-While open, anyone on GitHub who names a repo `ace-module2-lab` can use the
-SA's two roles; that residual is accepted deliberately (see Security
-analysis) in exchange for zero per-student operations.
+**Fixed-name admission + audience + kill switch.** There is no per-student
+roster. Gate 1 has two factors: the provider condition
+(`assertion.repository.endsWith('/ace-module2-lab')`) and the provider's
+**allowed audience** — a static pre-generated string, distributed only via
+the gated lab page, that each repo stores as the `WIF_AUDIENCE` secret and
+the workflow requests as the OIDC token's `aud` claim. Gate 2 is a single
+pool-wide `workloadIdentityUser` grant that `lab/wif-class-access.sh`
+toggles — `open` before a cohort, `close` after. While open, admission
+requires *both* the fixed repo name (free to anyone) and the audience value
+(enrolled students only); the remaining residual — a student sharing the
+string — is accepted deliberately (see Security analysis) in exchange for
+zero per-student operations.
 
 ### Components
 
@@ -89,8 +95,11 @@ analysis) in exchange for zero per-student operations.
 | OIDC provider | `github-oidc`, issuer `token.actions.githubusercontent.com`, maps `google.subject`, `attribute.repository`, `attribute.repository_owner` | `lab/setup-wif.sh` |
 | CI service account | `codemender-ci@elevate-cm-01-rt9xt4.iam.gserviceaccount.com` with `roles/aiplatform.user` + `roles/serviceusage.serviceUsageConsumer` (project-scoped; the first does **not** imply the second) | INSTRUCTOR.md §2a |
 | Class-access grant | pool-wide `principalSet://…/workloadIdentityPools/github-actions/*` → `workloadIdentityUser` (present = open, absent = closed) | `lab/wif-class-access.sh open\|close` |
+| Class audience | static string in the provider's `--allowed-audiences`; distributed only via the gated lab page; rotate = one `gcloud … update-oidc` | instructor (INSTRUCTOR.md §2c) |
 | Repo variables | `GCP_WIF_PROVIDER`, `GCP_SA_EMAIL`, `GCP_QUOTA_PROJECT` — plain config, identical class-wide, **not secrets** | students (or `lab/provision-student-repos.sh`) |
-| Pipeline auth | `google-github-actions/auth@v2` with `workload_identity_provider:` + `service_account:` + `project_id:`; job permission `id-token: write` | `codemender-pipeline.yml` |
+| Repo secret | `WIF_AUDIENCE` — the class audience; masked in public logs | students (or `lab/provision-student-repos.sh -a`) |
+| Pipeline auth | `google-github-actions/auth@v2` with `workload_identity_provider:` + `service_account:` + `project_id:` + `audience:`; job permission `id-token: write` | `codemender-pipeline.yml` |
+| `cm` binary | vendored at `lab/bin/cm-linux` (Releases don't copy on fork/template, so a release-download step broke student copies) | committed in the template |
 
 Everything is project-scoped. No org-level IAM exists in this design
 (workload identity pools are project resources; org-level "workforce pools"
@@ -101,8 +110,9 @@ are an unrelated product).
 | Threat | Outcome |
 |---|---|
 | Student reads the credential | Nothing to read — the three variables are public-safe config |
-| Student exfiltrates from a workflow | They obtain a token that expires in ≤1 h and grants only the SA's two project-scoped roles |
-| Anyone names a repo `ace-module2-lab` while access is **open** | **Admitted — accepted residual.** Bounded by the SA's two roles + project quota; mitigations: `close` outside lab windows, quota caps, and a less-guessable fixed name for public catalogs |
+| Student exfiltrates from a workflow | They obtain a token that expires in ≤1 h and grants only the SA's two project-scoped roles (plus the audience string they already legitimately have) |
+| Outsider names a repo `ace-module2-lab` while access is **open** | **Denied at Gate 1** — their token lacks the class audience, which lives only on the gated lab page (this closed what used to be the accepted open-window residual) |
+| Enrolled student shares the audience string | **Admitted — accepted residual.** Bounded by the SA's two roles + project quota; mitigations: `close` outside lab windows, quota caps, rotate the audience (one `gcloud` command) |
 | Same, while access is **closed** | Denied at Gate 2 ("unable to impersonate") — the default state between cohorts |
 | Abuse during an open window | `wif-class-access.sh close` cuts everyone off in seconds; reopen when resolved |
 | Residual: quota burn during open windows | Accepted — visible on one project's dashboard; the allow-listed project carries caps |
@@ -121,16 +131,19 @@ three-variable class handout) → `close` after. That's the entire recurring
 operation.
 
 **Per student (self-serve):** name the repo exactly `ace-module2-lab` → set
-the three repo variables → flip workflow permissions → instructor or student
-publishes the `cm` release (`publish-cm-release.sh`). For Classroom/org repos,
-`provision-student-repos.sh` batches the GitHub side.
+the three repo variables + the `WIF_AUDIENCE` secret → flip workflow
+permissions. Nothing to install — the `cm` binary ships in the repo. For
+Classroom/org repos, `provision-student-repos.sh -a <audience>` batches the
+GitHub side.
 
 **Failure → step → fix matrix:**
 
 | Symptom | Failing step | Fix |
 |---|---|---|
-| "Repo variable(s) not set: …" | Check WIF configuration | Add the named variable(s) — Variables tab, not Secrets |
+| "Not set: …" (variables or WIF_AUDIENCE) | Check WIF configuration | Add the named item — variables in the Variables tab, `WIF_AUDIENCE` in the Secrets tab |
+| Token exchange rejected ("invalid audience" or similar) | Authenticate to Google Cloud | `WIF_AUDIENCE` secret missing/typo'd — re-paste from the lab page |
 | "unable to impersonate" | Authenticate to Google Cloud | Class access closed (`open` it), repo not named exactly `ace-module2-lab`, or provider/SA variable typo |
+| "cm binary missing" | Install CodeMender CLI | Repo copy lacks `lab/bin/cm-linux` — re-copy the template fully |
 | "Grant the caller … serviceUsageConsumer" | cm find/fix | SA lost its second role — re-grant per §2a |
 | `RESOURCE_EXHAUSTED` | cm find/fix | Class-wide quota contention — split sections across CI projects (each gets its own `setup-wif.sh`, five minutes) |
 

@@ -48,6 +48,10 @@ show_status() {
   gcloud iam workload-identity-pools providers describe "$PROVIDER" \
     --project="$PROJECT" --location=global --workload-identity-pool="$POOL" \
     --format='value(attributeCondition)' | sed 's/^/   /'
+  echo ">> allowed audience (WIF_AUDIENCE repo secret must match):"
+  gcloud iam workload-identity-pools providers describe "$PROVIDER" \
+    --project="$PROJECT" --location=global --workload-identity-pool="$POOL" \
+    --format='value(oidc.allowedAudiences)' | sed 's/^/   /'
   echo ">> workloadIdentityUser members on $SA:"
   gcloud iam service-accounts get-iam-policy "$SA" --project="$PROJECT" \
     --format=json | python3 -c '
@@ -78,12 +82,18 @@ case "$ACTION" in
       --member="$POOL_MEMBER" >/dev/null
     echo ">> class access is OPEN for repos named '${REPO_NAME}'."
     WIF_PROVIDER="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}/providers/${PROVIDER}"
+    AUDIENCE=$(gcloud iam workload-identity-pools providers describe "$PROVIDER" \
+      --project="$PROJECT" --location=global --workload-identity-pool="$POOL" \
+      --format='value(oidc.allowedAudiences)')
     cat <<EOF
 
-Handout values (identical for every student, not secret):
+Handout values — three plain VARIABLES (identical for every student, not secret):
   GCP_WIF_PROVIDER  = ${WIF_PROVIDER}
   GCP_SA_EMAIL      = ${SA}
   GCP_QUOTA_PROJECT = ${PROJECT}
+
+…plus one repo SECRET (share via the gated lab page only, never commit it):
+  WIF_AUDIENCE      = ${AUDIENCE:-"(provider accepts the default audience — no secret required)"}
 
 Close access after the cohort:  $0 ${PROJECT} close
 EOF

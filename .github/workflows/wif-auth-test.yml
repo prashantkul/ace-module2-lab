@@ -17,8 +17,7 @@ permissions:
   id-token: write        # lets the runner mint the GitHub OIDC token WIF exchanges
 
 env:
-  CM_RELEASE_TAG: cm-cli-v0.2.0
-  CM_ASSET: cm-linux
+  CM_BUNDLED: lab/bin/cm-linux   # vendored in the repo (releases don't copy on fork/template)
 
 jobs:
   wif-test:
@@ -35,8 +34,9 @@ jobs:
           [ -n "${{ vars.GCP_WIF_PROVIDER }}" ] || MISSING="$MISSING GCP_WIF_PROVIDER"
           [ -n "${{ vars.GCP_SA_EMAIL }}" ]     || MISSING="$MISSING GCP_SA_EMAIL"
           [ -n "${{ vars.GCP_QUOTA_PROJECT }}" ] || MISSING="$MISSING GCP_QUOTA_PROJECT"
+          [ -n "${{ secrets.WIF_AUDIENCE }}" ]   || MISSING="$MISSING WIF_AUDIENCE(secret)"
           if [ -n "$MISSING" ]; then
-            echo "::error title=WIF variables missing::Set repo variables:$MISSING (lab/setup-wif.sh prints the exact commands)."
+            echo "::error title=WIF configuration missing::Set:$MISSING (lab/setup-wif.sh prints the exact commands; audience comes from the lab page)."
             exit 1
           fi
 
@@ -46,6 +46,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_SA_EMAIL }}
+          audience: ${{ secrets.WIF_AUDIENCE }}
 
       - name: Prove identity
         run: |
@@ -58,17 +59,10 @@ jobs:
             | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ", d.get("email"), "| scopes:", d.get("scope","")[:80])'
 
       - name: Install CodeMender CLI (cm)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/cmbin"
-          gh release download "$CM_RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$CM_ASSET" \
-            --dir "$RUNNER_TEMP/cmbin"
-          mv "$RUNNER_TEMP/cmbin/$CM_ASSET" "$RUNNER_TEMP/cmbin/cm"
-          chmod +x "$RUNNER_TEMP/cmbin/cm"
+          install -m 0755 "$CM_BUNDLED" "$RUNNER_TEMP/cmbin/cm"
           echo "$RUNNER_TEMP/cmbin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/cmbin/cm" --version || true
 
