@@ -36,6 +36,10 @@ CI collides with five constraints:
   rotation burden by N, and sandbox lifetimes churn.
 - **C5** — The lab must stay debuggable by one instructor: shared quota
   dashboard, uniform failure modes.
+- **C6** — The CodeMender backend is **allow-listed per GCP project**: only
+  pre-approved projects can call it. Whatever project absorbs the usage must
+  be one of those — which structurally excludes ephemeral or per-student
+  projects.
 
 ## Options considered
 
@@ -45,8 +49,8 @@ CI collides with five constraints:
 | GitHub org-level secret | Rejected | Only works for org/Classroom repos (C2); still a long-lived key (C3) |
 | Per-student SA keys | Rejected | C1 blocks key minting; C4 burden |
 | Org-level IAM binding for one SA | Rejected | Widens blast radius to every project in the GCP org; sandbox instructors rarely hold org admin; solves nothing about distribution |
-| **WIF, shared project (chosen)** | **Shipped** | No secret at all → students self-serve on any repo type; per-repo roster; one quota project (C5) |
-| WIF, per-student projects | Deferred | Best isolation + per-student billing, but needs Elevate-provisioner work and per-student GCP setup; revisit if quota contention bites (see Future work) |
+| **WIF, shared project (chosen)** | **Shipped** | No secret at all → students self-serve on any repo type; per-repo roster; one quota project (C5); satisfies C6 by construction |
+| WIF, per-student projects | Infeasible | Blocked by C6 — per-student projects can't be allow-listed at scale. (Would otherwise offer the best isolation and per-student billing.) |
 
 ## Architecture
 
@@ -135,10 +139,13 @@ remains). After the first green WIF production run:
 
 ## Future work
 
-- **Per-student quota projects:** extend the Elevate provisioner to create a
-  pool/provider/SA inside each sandbox project (condition pinned to the
-  student's username). Gives per-student billing and quota isolation at the
-  cost of provisioner work and a per-student variable handout. The pipeline
-  needs no changes — same three variables, different values.
+- **Quota scaling:** if a large cohort saturates the shared project, split
+  sections across additional allow-listed projects (each needs its own
+  `setup-wif.sh` — five minutes — plus allow-listing lead time). Per-student
+  quota projects remain off the table while CodeMender access is
+  allow-listed per project (C6).
+- **Self-paced roster admission:** for instructor-less delivery (e.g. a
+  Qwiklabs self-paced catalog), automate `wif-add-students.sh` behind a
+  small authenticated endpoint — see `QWIKLABS.md`.
 - **PR-trigger gating:** `pull_request` runs from forks get no `id-token` by
   default; if PR gating is re-enabled, restrict it to same-repo branches.

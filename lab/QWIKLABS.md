@@ -1,169 +1,110 @@
-# Bringing This Lab to Qwiklabs / Google Cloud Skills Boost
+# Qwiklabs Write-Up: CodeMender CI/CD Guardrail
 
-This guide is for a lab author who wants to run the CodeMender CI/CD
-Guardrail lab on Qwiklabs. It walks through what you get for free, what you
-need to build, and the one thing you should verify before committing to the
-port. For the full story on how the authentication works, read
-[`DESIGN.md`](./DESIGN.md) — here we'll only cover what's different in a
-Qwiklabs environment.
+Ready-to-use lab content for Qwiklabs / Skills Boost. Students set up a
+GitHub repo, run the guardrail workflow, and verify four outcomes. Repos are
+**public** — safe here because this lab contains no secrets anywhere (auth
+is keyless Workload Identity Federation; see [`DESIGN.md`](./DESIGN.md)),
+and it makes verification a matter of opening URLs.
 
-Here's the short version: **copying the repository gives you half the lab.**
-The workflow, the scripts, and the student guide all transfer unchanged. But
-the pipeline authenticates to Google Cloud through infrastructure that lives
-*outside* the repo — a service account, a workload identity pool, and a trust
-relationship with the student's GitHub repository. Someone has to create
-those, and in Qwiklabs that "someone" is your lab provisioning plus one
-command the student runs.
-
-The genuinely good news: Qwiklabs is a *better* home for this design than a
-traditional classroom. You'll see why in a moment.
+**Before publishing, the course team fills in:** the three variable values
+(printed by `wif-add-students.sh`), and admits each student's GitHub
+username to the roster. The shared, allow-listed GCP project already exists —
+Qwiklabs provisions nothing.
 
 ---
 
-## Why Qwiklabs makes this easier, not harder
+## Lab instructions (student-facing)
 
-In the classroom version of this lab, every student shares one Google Cloud
-project. That forces some machinery: the instructor keeps a roster of student
-repositories, admits each one with an IAM binding, hands out quota from a
-shared pool, and revokes people who misbehave.
+### Setup — about 5 minutes
 
-Qwiklabs turns all of that off. Each student gets their own throwaway
-project, so:
+1. **Create your repo.** Open the course template on GitHub → **Use this
+   template → Create a new repository**. Name it `ace-module2-lab`, owner =
+   your account, visibility = **Public**.
 
-- **There is no roster.** Each project trusts exactly one GitHub repo — the
-  student's own. Nothing to admit anyone to, nothing to revoke.
-- **There is no shared quota.** If a student re-runs their scan five times,
-  they throttle only themselves.
-- **The student builds the trust chain with their own hands.** Qwiklabs
-  students have broad permissions on their project, so creating the identity
-  federation becomes a lab step rather than something an instructor did for
-  them — which is honestly the better lesson. This lab is about CI/CD
-  security; letting students construct "my pipeline can prove to Google which
-  repo it is" is on-topic in the best way.
+2. **Add the three variables.** In your repo: **Settings → Secrets and
+   variables → Actions → Variables tab → New repository variable.** Add
+   these exactly (they are the same for everyone and not secret):
 
-And because the design contains **no secrets and no keys at all**, there is
-nothing here that collides with Qwiklabs credential policies, and nothing to
-clean up when the lab ends. When the project is deleted, everything auth-
-related dies with it.
+   | Name | Value |
+   |---|---|
+   | `GCP_WIF_PROVIDER` | *(value from lab page)* |
+   | `GCP_SA_EMAIL` | *(value from lab page)* |
+   | `GCP_QUOTA_PROJECT` | *(value from lab page)* |
 
-## What your lab startup script needs to do
+3. **Allow the pipeline to open pull requests.** **Settings → Actions →
+   General → Workflow permissions:** select **Read and write permissions**
+   and check **Allow GitHub Actions to create and approve pull requests**.
+   Save.
 
-Before the student arrives, the project needs three things: the right APIs
-enabled, a service account for the pipeline to act as, and that service
-account's two roles. This is about ten lines of provisioning:
+### Run — about 20 minutes, mostly waiting
+
+4. Open the **Actions** tab → **CodeMender CI/CD Guardrail** → **Run
+   workflow**. Watch it scan your code, generate a report, auto-patch the
+   top findings, and open a pull request.
+
+5. **The run ends with a red ❌ — that is success.** The Security Gate found
+   HIGH/CRITICAL vulnerabilities and blocked "deployment." A green run would
+   mean the guardrail failed to guard.
+
+### Verify — four checks, all in the browser
+
+| # | Check | Where |
+|---|---|---|
+| 1 | Scan ran clean | The run's steps "CodeMender Scan" and "Triage Findings" are green ✅ |
+| 2 | Gate blocked deployment | The step "Security Gate (fail on HIGH/CRITICAL)" is red ❌ with *"Deployment blocked"* |
+| 3 | Report was produced | The run's **Summary** page lists artifact **`codemender-report`** |
+| 4 | Auto-remediation PR exists | **Pull requests** tab shows **"🤖 CodeMender: autonomous security remediation"** — open it and look at the patches |
+
+If something fails instead:
+
+- **Run stops at "Check WIF configuration"** → a variable is missing or
+  misspelled (step 2 — Variables tab, not Secrets).
+- **Auth step fails with "unable to impersonate"** → you're not on the
+  roster yet; contact the course team with your GitHub username.
+- **"not permitted to create or approve pull requests"** → step 3 was
+  missed.
+
+---
+
+## Grader verification (no access needed — repos are public)
+
+Browser: open `github.com/<student>/ace-module2-lab` → **Actions** (red
+guardrail run), the run's **Summary** (artifact), **Pull requests** (bot
+PR). Thirty seconds per student.
+
+Or from a terminal, with any authenticated `gh`:
 
 ```bash
-PROJECT=$(gcloud config get-value project)
+R=<student>/ace-module2-lab
 
-gcloud services enable aiplatform.googleapis.com \
-                       iamcredentials.googleapis.com \
-                       sts.googleapis.com --project=$PROJECT
+# 1+2 — latest guardrail run exists and ended red (gate)
+gh run list -R $R --workflow codemender-pipeline.yml -L 1
 
-gcloud iam service-accounts create codemender-ci \
-  --project=$PROJECT --display-name="CodeMender CI"
+# 3 — report artifact present on that run
+gh api repos/$R/actions/runs/$(gh run list -R $R -L 1 --json databaseId --jq '.[0].databaseId')/artifacts --jq '.artifacts[].name'
 
-SA=codemender-ci@$PROJECT.iam.gserviceaccount.com
-
-gcloud projects add-iam-policy-binding $PROJECT \
-  --member="serviceAccount:$SA" --role="roles/aiplatform.user"
-gcloud projects add-iam-policy-binding $PROJECT \
-  --member="serviceAccount:$SA" --role="roles/serviceusage.serviceUsageConsumer"
+# 4 — remediation PR opened by the bot
+gh pr list -R $R --head codemender/auto-remediation
 ```
 
-Two details worth calling out:
+Expected: run conclusion `failure` (the red gate), artifact
+`codemender-report`, and one open PR titled "🤖 CodeMender: autonomous
+security remediation".
 
-- **Both roles really are required.** `aiplatform.user` looks sufficient but
-  doesn't include `serviceusage.services.use`, and without the second role
-  the pipeline fails mid-scan with a confusing quota error. This is the most
-  common way to break the lab while "simplifying" it.
-- **The student's Qwiklabs identity needs two extra roles** on top of your
-  usual grant: `roles/iam.workloadIdentityPoolAdmin` and
-  `roles/iam.serviceAccountAdmin`. Those are what let the student run the
-  trust-setup script in the next section.
+---
 
-## What the student does
+## Course-team notes
 
-This replaces Step 2 of the student README. Five steps, all of them quick:
-
-1. **Create a repo from the template** under their own GitHub account.
-
-2. **Build the trust chain.** In Cloud Shell:
-
-   ```bash
-   git clone https://github.com/<you>/ace-module2-lab && cd ace-module2-lab
-   ./lab/setup-wif.sh $GOOGLE_CLOUD_PROJECT <you>/ace-module2-lab
-   ```
-
-   This creates the workload identity pool and provider in their project and
-   tells Google "workflows from this one GitHub repo may act as the CI
-   service account." When it finishes, it prints three values.
-
-3. **Paste those three values into the repo** as Actions *variables* (not
-   secrets — that's the point of the design): `GCP_WIF_PROVIDER`,
-   `GCP_SA_EMAIL`, and `GCP_QUOTA_PROJECT`.
-
-4. **Let the pipeline open pull requests.** In the repo: Settings → Actions →
-   General → Workflow permissions → choose "Read and write permissions" and
-   check "Allow GitHub Actions to create and approve pull requests."
-
-5. **Push to `main`** (or trigger the workflow manually) and watch the
-   guardrail do its thing: scan, report, auto-fix, remediation PR, and a
-   deliberately red security gate.
-
-## One change we recommend: commit the `cm` binary
-
-The workflow currently downloads the `cm` CLI from a GitHub Release on the
-student's own repository — and GitHub does **not** copy Releases when a repo
-is created from a template. In the classroom version, the instructor
-publishes that release onto each student repo. In Qwiklabs there's no
-instructor in the loop, and asking students to authenticate `gh` and publish
-a release is friction a timed lab doesn't need.
-
-So for the Qwiklabs template: **commit the `cm-linux` binary into the repo**
-(about 29 MB) and replace the workflow's download step with a `chmod +x`.
-It's a less elegant repo, but it removes an entire category of student
-confusion, and timed labs should always trade elegance for fewer moving
-parts. The public download URL for the binary is in INSTRUCTOR.md §1.
-
-## Before you build anything: verify the one real unknown
-
-Everything above is mechanical. The one question that isn't: **does the
-CodeMender backend accept requests billed to a Qwiklabs-provisioned
-project?** Service availability and Vertex AI quota in your project template
-are outside anyone's workflow file, and no amount of correct YAML fixes a
-backend that says no.
-
-Happily, this repo ships the exact test you need. From a trial Qwiklabs
-project, walk through the student steps above with a test repo, then trigger
-the **"WIF Auth Test (CodeMender)"** workflow from the Actions tab. It
-authenticates keylessly and runs a real one-file scan against the live
-backend. Green in about five minutes means the port is viable; if it fails,
-the step it fails on tells you whether the problem is the token exchange,
-the roles, or the backend.
-
-While you're at it, size the Vertex AI quota in your project template for
-roughly **two full scans plus three fix sessions per student** — one graded
-run plus headroom for the inevitable re-run.
-
-## Grading
-
-Qwiklabs' activity tracker can only see the Google Cloud side of the lab.
-That still gives you useful signals: the service account exists with both
-roles, the pool and provider exist, the service account has a
-`workloadIdentityUser` binding (which proves the student completed the trust
-setup), and Vertex AI request metrics above zero (which proves a scan
-actually ran).
-
-What the tracker *can't* see are the GitHub-side outcomes — the red security
-gate, the report artifact, the remediation PR. Those are the four rubric
-criteria in INSTRUCTOR.md §3, so either have students submit their repo URL
-for review, or accept the GCP-side signals as a reasonable proxy and let the
-rubric be a self-check.
-
-## Teardown
-
-There isn't any. Deleting the project — which Qwiklabs does automatically —
-removes the service account, the pool, the provider, and the trust bindings.
-No credential outlives the lab, because no credential ever existed. The
-student's repo keeps three now-orphaned variables pointing at a dead
-project, which is harmless by design: none of them were ever secret.
+- **Roster:** admit usernames with
+  `./lab/wif-add-students.sh <shared-project> -f roster.txt`; revoke with
+  `-r`. A repo not on the roster fails auth — that's the security boundary.
+- **Template:** commit the `cm-linux` binary into the Qwiklabs template (and
+  swap the release-download step for `chmod +x`) — GitHub doesn't copy
+  Releases to student copies, and this removes the most confusing failure
+  mode. Binary URL: INSTRUCTOR.md §1.
+- **Quota:** all usage bills to the shared allow-listed project. Budget ~2
+  scans + 3 fix sessions per student; if a cohort throttles
+  (`RESOURCE_EXHAUSTED`), add another allow-listed project per section —
+  allow-listing has lead time.
+- **Teardown:** prune roster bindings after each cohort. Student repos keep
+  three harmless public variables.
