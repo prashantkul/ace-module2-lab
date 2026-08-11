@@ -9,17 +9,22 @@ name: CodeMender CI/CD Guardrail
 #     -> cm report -f json (artifact) -> triage -> cm fix (auto-patch)
 #     -> open remediation PR -> SECURITY GATE (fail red on HIGH/CRITICAL)
 #
-# Auth (see lab/README.md):
-#   * GCP_SA_KEY      — JSON key of a service account holding BOTH
-#     roles/aiplatform.user AND roles/serviceusage.serviceUsageConsumer.
-#     `cm` (v0.2.0) authenticates to Google via Application Default
-#     Credentials (ADC) and attributes quota to GOOGLE_CLOUD_PROJECT; the
-#     auth step below writes the ADC file and exports both env vars.
-#     NOTE: aiplatform.user alone is NOT enough — it does not include
-#     serviceusage.services.use, so without serviceUsageConsumer ADC fails
-#     with "Grant the caller the roles/serviceusage.serviceUsageConsumer
-#     role". A missing/empty secret fails the run fast at the credential
-#     check, with a pointer to lab/README.md Step 2.
+# Auth (KEYLESS — Workload Identity Federation; see lab/README.md Step 2):
+#   * No service-account key exists anywhere in this design. The runner mints
+#     a GitHub OIDC token (`id-token: write` below) and the auth step
+#     exchanges it for short-lived credentials of the CI service account,
+#     via the pool/provider created by lab/setup-wif.sh. Three repo
+#     VARIABLES (plain config, not secrets) wire it up:
+#       GCP_WIF_PROVIDER  — projects/<n>/locations/global/workloadIdentityPools/…/providers/…
+#       GCP_SA_EMAIL      — the CI service account to impersonate
+#       GCP_QUOTA_PROJECT — project that absorbs Vertex AI quota/billing
+#     The SA needs BOTH roles/aiplatform.user AND
+#     roles/serviceusage.serviceUsageConsumer — aiplatform.user does NOT
+#     include serviceusage.services.use, and without the second role ADC
+#     fails with "Grant the caller the roles/serviceusage.serviceUsageConsumer
+#     role". `cm` (v0.2.0) reads ADC + GOOGLE_CLOUD_PROJECT, both exported
+#     by the auth step. Proven against the real cm backend by
+#     .github/workflows/wif-auth-test.yml.
 #   * GITHUB_TOKEN    — built-in; used to download the private `cm` release
 #     asset and to open the remediation pull request.
 # ---------------------------------------------------------------------------
@@ -40,6 +45,7 @@ on:
 permissions:
   contents: write          # create the remediation branch / commit the patch
   pull-requests: write     # open the autonomous remediation PR
+  id-token: write          # mint the GitHub OIDC token WIF exchanges for GCP creds
 
 env:
   # Scoped scan target. Kept well under cm's ~10 MB per-scan upload limit and
@@ -65,34 +71,35 @@ jobs:
         with:
           fetch-depth: 0          # full history so cm can evaluate code context
 
-      # The `secrets` context can't be tested in a step-level `if:`, so a shell
-      # step probes the secret and the auth step keys off its output. Prints
-      # only safe metadata (length / credential type / project), never the key.
-      - name: Check CI credentials (GCP_SA_KEY)
-        id: adc
-        env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      # Keyless-auth preflight: fail fast, with one actionable message, if any
+      # of the three WIF repo variables is missing — instead of a cryptic
+      # token-exchange error at the auth step.
+      - name: Check WIF configuration
         run: |
           set -uo pipefail
-          if [ -n "${GCP_SA_KEY:-}" ]; then
-            echo "GCP_SA_KEY present (${#GCP_SA_KEY} bytes)"
-            python3 -c 'import json,os; d=json.loads(os.environ["GCP_SA_KEY"]); print("credential type:", d.get("type"), "| project:", d.get("project_id") or d.get("quota_project_id"))' \
-              || echo "::warning::GCP_SA_KEY is set but is not valid JSON — the auth step will likely fail."
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error title=Missing CI credential::The GCP_SA_KEY secret is unset or EMPTY. cm authenticates via ADC and cannot run without it — provision the secret per lab/README.md Step 2 (and verify the key file is non-empty before 'gh secret set')."
+          MISSING=""
+          [ -n "${{ vars.GCP_WIF_PROVIDER }}" ]  || MISSING="$MISSING GCP_WIF_PROVIDER"
+          [ -n "${{ vars.GCP_SA_EMAIL }}" ]      || MISSING="$MISSING GCP_SA_EMAIL"
+          [ -n "${{ vars.GCP_QUOTA_PROJECT }}" ] || MISSING="$MISSING GCP_QUOTA_PROJECT"
+          if [ -n "$MISSING" ]; then
+            echo "::error title=Missing WIF configuration::Repo variable(s) not set:$MISSING. cm authenticates keylessly via Workload Identity Federation — add the variables per lab/README.md Step 2 (your instructor provides the values; they are not secrets)."
             exit 1
           fi
+          echo "WIF variables present:"
+          echo "  provider: ${{ vars.GCP_WIF_PROVIDER }}"
+          echo "  SA:       ${{ vars.GCP_SA_EMAIL }}"
+          echo "  project:  ${{ vars.GCP_QUOTA_PROJECT }}"
 
-      # Writes the ADC credential file and exports GOOGLE_APPLICATION_CREDENTIALS
-      # + GOOGLE_CLOUD_PROJECT (from the key's project_id) for all later steps —
-      # exactly what `cm` reads. The SA behind the key needs aiplatform.user AND
-      # serviceusage.serviceUsageConsumer (see the header comment).
-      - name: Authenticate to Google Cloud (ADC)
-        if: ${{ steps.adc.outputs.present == 'true' }}
+      # Exchanges the runner's OIDC token for short-lived SA credentials,
+      # writes the ADC credential file, and exports
+      # GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT for all later
+      # steps — exactly what `cm` reads. No key is involved at any point.
+      - name: Authenticate to Google Cloud (WIF / ADC)
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+          project_id: ${{ vars.GCP_QUOTA_PROJECT }}
 
       - name: Install CodeMender CLI (cm)
         env:

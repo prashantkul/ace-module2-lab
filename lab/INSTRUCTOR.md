@@ -15,6 +15,10 @@ instructions are in [`README.md`](./README.md).
 | `lab/README.md` | Student lab guide |
 | `lab/INSTRUCTOR.md` | This file |
 | `lab/publish-cm-release.sh` | Helper: publish the `cm` binary as a Release asset on a repo |
+| `lab/setup-wif.sh` | One-time: workload-identity pool + GitHub OIDC provider + SA binding (keyless auth) |
+| `lab/wif-add-students.sh` | Class roster: admit/revoke student repos for SA impersonation; prints the 3-variable handout |
+| `lab/provision-student-repos.sh` | Batch-configure repos you administer (variables + release + workflow perms) |
+| `.github/workflows/wif-auth-test.yml` | Manual smoke test proving WIF works against the live cm backend |
 | Release `cm-cli-v0.2.0` | Holds `cm-linux` (runner; `cm-mac` optional), downloaded in CI |
 
 The target app is **OWASP Juice Shop**, imported as a single clean commit. The
@@ -59,17 +63,23 @@ student repos, then loop `publish-cm-release.sh` over them.
 
 ## 2. Per-repo setup checklist
 
-### 2a. The CI service account (one per class)
+### 2a. Keyless CI auth — one SA + WIF for the whole class
 
 `cm` authenticates via **ADC** and attributes quota to `GOOGLE_CLOUD_PROJECT`.
-The pipeline's auth step consumes a **`GCP_SA_KEY`** repo secret holding a
-service-account JSON key. Create the SA once, in a project you control:
+The pipeline is **keyless**: each run exchanges its GitHub OIDC token for
+short-lived credentials of one shared CI service account, via **Workload
+Identity Federation**. No key file exists, so there is nothing students can
+leak (or exfiltrate from a workflow), and nothing to rotate after the course —
+admission is a per-repo IAM roster you edit with one command.
+
+One-time setup, in a project you control:
 
 ```bash
 PROJECT=<ci-project-id>
 SA=codemender-ci@$PROJECT.iam.gserviceaccount.com
 
-gcloud services enable aiplatform.googleapis.com --project=$PROJECT
+gcloud services enable aiplatform.googleapis.com iamcredentials.googleapis.com \
+  --project=$PROJECT
 gcloud iam service-accounts create codemender-ci \
   --project=$PROJECT --display-name="CodeMender CI"
 
@@ -81,22 +91,33 @@ gcloud projects add-iam-policy-binding $PROJECT \
 gcloud projects add-iam-policy-binding $PROJECT \
   --member="serviceAccount:$SA" --role="roles/serviceusage.serviceUsageConsumer"
 
-# Key -> repo secret (loop the gh line over student repos), then shred the file
-gcloud iam service-accounts keys create /tmp/cm-ci-key.json --iam-account=$SA
-gh secret set GCP_SA_KEY < /tmp/cm-ci-key.json --repo <owner>/<repo>
-rm -f /tmp/cm-ci-key.json
+# Pool + GitHub OIDC provider + impersonation binding for YOUR template repo
+./lab/setup-wif.sh $PROJECT <owner>/ace-module2-lab
 ```
+
+Then, per class, admit student repos from the roster of GitHub usernames
+(this also relaxes the provider condition from the single-repo pin to
+"any repo named ace-module2-lab" — the per-repo bindings remain the real gate):
+
+```bash
+./lab/wif-add-students.sh $PROJECT alice bob carol      # or -f roster.txt
+./lab/wif-add-students.sh $PROJECT -r mallory           # revoke one student
+```
+
+The script prints the **three repo variables** (identical for every student,
+none of them secret) for the class handout — that's all students configure,
+per README Step 2.
 
 Notes:
 
-- **No org-level IAM is needed** — both grants are project-scoped.
-- If key creation is blocked by the org policy
-  `iam.managed.disableServiceAccountKeyCreation` (Argolis default), add a
-  project-scoped exception, or switch the workflow's auth step to keyless
-  **Workload Identity Federation**.
-- Students' sandbox roles can't create service accounts or keys, so the
-  instructor provisions this (students can still paste the key JSON into
-  their repo secret themselves if you hand it out).
+- **No org-level IAM is needed** — the pool, provider, and both role grants
+  are project-scoped. (Workload identity pools are project resources; the
+  org-level "workforce pools" are a different product.)
+- The old key-based flow (`GCP_SA_KEY` secret) is fully retired. If you ran a
+  cohort on it, clean up: `gcloud iam service-accounts keys list
+  --iam-account=$SA`, delete the keys, and remove the repo secrets.
+- Students' sandbox roles can't create service accounts, keys, or WIF pools —
+  all of this is instructor-side by design.
 
 ### 2b. Sandbox accounts running `cm` locally (Elevate)
 
@@ -116,11 +137,18 @@ or release + re-provision them.
 
 ### 2c. Checklist
 
-For **each** repo students will use (or the template before distribution):
+**Once per class (GCP side, instructor only):**
+
+- [ ] SA + roles + pool/provider: §2a one-time setup, then `lab/setup-wif.sh`
+- [ ] Roster: `./lab/wif-add-students.sh <project> -f roster.txt`
+      (roster = GitHub usernames; full `owner/repo` paths for Classroom orgs)
+
+**For each student repo (self-serve on personal accounts, or batch with
+`lab/provision-student-repos.sh` when you control the repos):**
 
 - [ ] Publish the `cm` release: `./lab/publish-cm-release.sh <owner>/<repo> <cm-linux>`
-- [ ] Set the **`GCP_SA_KEY`** secret:
-      `gh secret set GCP_SA_KEY < cm-ci-key.json --repo <owner>/<repo>`
+- [ ] Set the three **WIF repo variables** (README Step 2 — plain variables,
+      identical class-wide, printed by `wif-add-students.sh`)
 - [ ] **Settings → Actions → General → Workflow permissions:**
       "Read and write permissions" **and**
       "Allow GitHub Actions to create and approve pull requests" — both ON.
@@ -128,10 +156,10 @@ For **each** repo students will use (or the template before distribution):
 - [ ] (Optional) Branch protection on `main` so the red gate actually blocks
       merges — makes the "deployment blocked" outcome tangible.
 
-> **Heads-up on quota:** all usage lands on the `GCP_SA_KEY` project
-> (`cm` 0.2.0 has no fallback auth — a missing/empty secret fails the run at
-> the credential check). One shared CI project can throttle a big class
-> (`RESOURCE_EXHAUSTED`), so split sections across CI projects if that bites.
+> **Heads-up on quota:** all usage lands on the `GCP_QUOTA_PROJECT` project —
+> the shared-project design's one real cost. One CI project can throttle a big
+> class (`RESOURCE_EXHAUSTED`), so split sections across CI projects if that
+> bites (each gets its own pool via `setup-wif.sh` — five minutes of work).
 
 ---
 

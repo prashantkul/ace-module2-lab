@@ -16,7 +16,8 @@ injection, file-upload XXE / Zip-Slip, …) and auto-patch the most severe ones.
 - How an AI security agent (CodeMender) is wired into GitHub Actions as a
   **deployment gate**.
 - The real CodeMender pipeline: `find` (scan) → `report` → `fix` (auto-patch).
-- Provisioning and using **CI secrets** safely.
+- **Keyless CI auth**: why Workload Identity Federation beats long-lived
+  secrets, and how to wire it.
 - **Fail-safe gating**: turning a scan result into a red/green deploy decision.
 - **Autonomous remediation**: an agent opening a PR with a code fix.
 
@@ -70,37 +71,46 @@ This repository is your lab template. It already contains:
    That's the GitHub Actions structure GitHub auto-discovers — any `*.yml` under
    `.github/workflows/` becomes a pipeline.
 
-## Step 2 — Provision the secret
+## Step 2 — Connect to Google Cloud (keyless)
 
 CodeMender authenticates to Google Cloud with **Application Default
 Credentials (ADC)** and bills its usage to the project in
-`GOOGLE_CLOUD_PROJECT`. In CI that means one repository secret: a service
-account's JSON key. The identity behind it needs **two** project-level roles:
+`GOOGLE_CLOUD_PROJECT`. This lab does it **without any key or secret**, via
+**Workload Identity Federation (WIF)**: each pipeline run mints a short-lived
+GitHub OIDC token proving *which repository* it runs for, and Google exchanges
+it for temporary CI-service-account credentials — but **only if your repo is
+on the class roster**. Nothing here is confidential; there is nothing you
+could leak.
 
-| Role | Why |
-|---|---|
-| `roles/aiplatform.user` | Call the CodeMender / Vertex AI service |
-| `roles/serviceusage.serviceUsageConsumer` | Let ADC use the project as its quota project — `aiplatform.user` does **not** include `serviceusage.services.use`, and without it auth fails with *"Grant the caller the roles/serviceusage.serviceUsageConsumer role"* |
+1. **Get on the roster.** Send your instructor your **GitHub username**.
+   (They allow-list `your-username/ace-module2-lab` on the Google Cloud side.)
+2. **Set three repository *variables*** (not secrets!) — your instructor
+   provides the values, which are the same for the whole class:
+   go to **Settings → Secrets and variables → Actions → Variables tab →
+   New repository variable** and add:
 
-Add the secret (your instructor provides the key — sandbox accounts can't
-mint service-account keys themselves):
+   | Variable | Meaning |
+   |---|---|
+   | `GCP_WIF_PROVIDER` | The identity-federation provider your repo's tokens are exchanged at |
+   | `GCP_SA_EMAIL` | The CI service account your pipeline impersonates |
+   | `GCP_QUOTA_PROJECT` | The project that absorbs the Vertex AI usage |
 
-1. Go to **Settings → Secrets and variables → Actions**.
-2. Click **New repository secret**.
-3. Name: **`GCP_SA_KEY`**  — Value: the full contents of the service-account
-   JSON key file.
-4. Save.
-
-Then enable the pipeline's ability to open a remediation PR:
-
-5. Go to **Settings → Actions → General → Workflow permissions**.
-6. Select **Read and write permissions**, and check
+3. Enable the pipeline's ability to open a remediation PR:
+   go to **Settings → Actions → General → Workflow permissions**, select
+   **Read and write permissions**, and check
    **Allow GitHub Actions to create and approve pull requests**. Save.
 
-> **Note:** `cm` v0.2.0 authenticates **only** via ADC — there is no fallback.
-> If `GCP_SA_KEY` is missing or empty, the pipeline fails fast at the
-> "Check CI credentials" step with an error pointing back here, instead of
-> failing cryptically mid-scan.
+For the curious: the service account itself holds two project-level roles —
+`roles/aiplatform.user` (call the CodeMender/Vertex AI service) and
+`roles/serviceusage.serviceUsageConsumer` (attribute quota; `aiplatform.user`
+alone lacks `serviceusage.services.use`).
+
+> **Fail-fast notes:**
+> - Missing/misspelled variables stop the run immediately at the
+>   **"Check WIF configuration"** step with an error pointing back here.
+> - If the variables are right but your repo isn't on the roster yet, the
+>   **auth step** fails with *"unable to impersonate"* — ask your instructor
+>   to add you (Step 2.1).
 
 ### Running `cm` locally instead? (sandbox accounts)
 
@@ -124,7 +134,7 @@ Open `.github/workflows/codemender-pipeline.yml`. It runs on every push to
 
 | Stage | Command | What it does |
 |---|---|---|
-| **Auth** | `google-github-actions/auth` | Writes the `GCP_SA_KEY` JSON to an ADC file and exports `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` — the env `cm` reads |
+| **Auth** | `google-github-actions/auth` | Exchanges the run's GitHub OIDC token for short-lived service-account credentials (WIF), writes the ADC file, and exports `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` — the env `cm` reads |
 | **Install** | `gh release download cm-cli-v0.2.0` | Pulls the `cm` binary (private Release asset) using the built-in `GITHUB_TOKEN` |
 | **Init** | `cm init` | Mints the local CodeMender identity key |
 | **Scan** | `cm find routes -y` | Uploads `routes/` and runs the server-side scan |
@@ -223,11 +233,15 @@ code? What does that imply for using one as a *blocking* deployment gate?
   ```
   (or to release + re-provision your sandbox, which now grants it
   automatically), then retry the login.
-- **"Authenticate to Google Cloud" step fails** → the `GCP_SA_KEY` secret must
-  contain the *entire* service-account JSON key (starts with `{`), not a path
-  or an API-key string.
+- **"Authenticate to Google Cloud" step fails with "unable to impersonate"**
+  → your repo isn't on the class roster yet, or your `GCP_WIF_PROVIDER` /
+  `GCP_SA_EMAIL` values have a typo. Compare against the instructor handout,
+  then ask to be added (Step 2.1).
+- **Run stops at "Check WIF configuration"** → one of the three repo
+  *variables* is missing or misspelled — the error lists which. Note they're
+  under the **Variables** tab, not Secrets.
 - **"GitHub Actions is not permitted to create or approve pull requests"** →
-  you missed Step 2.5/2.6 (the workflow-permissions toggle).
+  you missed Step 2.3 (the workflow-permissions toggle).
 - **`gh release download` fails / `cm-linux` not found** → the `cm` release
   isn't published on *your* repo. Ask your instructor (see `INSTRUCTOR.md`).
 - **Run is green with 0 findings** → the scan didn't surface a HIGH/CRITICAL.
