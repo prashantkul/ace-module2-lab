@@ -16,10 +16,10 @@ instructions are in [`README.md`](./README.md).
 | `lab/INSTRUCTOR.md` | This file |
 | `lab/publish-cm-release.sh` | Helper: publish the `cm` binary as a Release asset on a repo |
 | `lab/setup-wif.sh` | One-time: workload-identity pool + GitHub OIDC provider + SA binding (keyless auth) |
-| `lab/wif-add-students.sh` | Class roster: admit/revoke student repos for SA impersonation; prints the 3-variable handout |
+| `lab/wif-class-access.sh` | Open/close class access (fixed-repo-name admission); prints the 3-variable handout |
 | `lab/provision-student-repos.sh` | Batch-configure repos you administer (variables + release + workflow perms) |
 | `lab/DESIGN.md` | Design doc for the keyless (WIF) auth architecture |
-| `lab/QWIKLABS.md` | Porting guide for Qwiklabs / Skills Boost (per-student projects, no roster) |
+| `lab/QWIKLABS.md` | Paste-ready lab write-up + verification for Qwiklabs / Skills Boost |
 | `.github/workflows/wif-auth-test.yml` | Manual smoke test proving WIF works against the live cm backend |
 | Release `cm-cli-v0.2.0` | Holds `cm-linux` (runner; `cm-mac` optional), downloaded in CI |
 
@@ -72,7 +72,8 @@ The pipeline is **keyless**: each run exchanges its GitHub OIDC token for
 short-lived credentials of one shared CI service account, via **Workload
 Identity Federation**. No key file exists, so there is nothing students can
 leak (or exfiltrate from a workflow), and nothing to rotate after the course —
-admission is a per-repo IAM roster you edit with one command.
+admission is by the **fixed repo name** (`ace-module2-lab`), behind an
+open/close switch you flip around each cohort.
 
 One-time setup, in a project you control:
 
@@ -97,18 +98,21 @@ gcloud projects add-iam-policy-binding $PROJECT \
 ./lab/setup-wif.sh $PROJECT <owner>/ace-module2-lab
 ```
 
-Then, per class, admit student repos from the roster of GitHub usernames
-(this also relaxes the provider condition from the single-repo pin to
-"any repo named ace-module2-lab" — the per-repo bindings remain the real gate):
+Then, around each cohort, flip the access switch (no student roster — any
+repo named exactly `ace-module2-lab` is admitted while access is open):
 
 ```bash
-./lab/wif-add-students.sh $PROJECT alice bob carol      # or -f roster.txt
-./lab/wif-add-students.sh $PROJECT -r mallory           # revoke one student
+./lab/wif-class-access.sh $PROJECT open     # before the session; prints the handout
+./lab/wif-class-access.sh $PROJECT close    # after — the kill switch
+./lab/wif-class-access.sh $PROJECT status   # what's admitted right now
 ```
 
-The script prints the **three repo variables** (identical for every student,
+`open` prints the **three repo variables** (identical for every student,
 none of them secret) for the class handout — that's all students configure,
-per README Step 2.
+per README Step 2. Don't leave access open between cohorts: while open,
+anyone on GitHub with a repo named `ace-module2-lab` can spend the shared
+project's Vertex AI quota. That trade is deliberate (zero per-student ops);
+`close` is what keeps it honest.
 
 Notes:
 
@@ -142,15 +146,15 @@ or release + re-provision them.
 **Once per class (GCP side, instructor only):**
 
 - [ ] SA + roles + pool/provider: §2a one-time setup, then `lab/setup-wif.sh`
-- [ ] Roster: `./lab/wif-add-students.sh <project> -f roster.txt`
-      (roster = GitHub usernames; full `owner/repo` paths for Classroom orgs)
+- [ ] Open access before each cohort: `./lab/wif-class-access.sh <project> open`
+      (and `close` after — don't leave it open between cohorts)
 
 **For each student repo (self-serve on personal accounts, or batch with
 `lab/provision-student-repos.sh` when you control the repos):**
 
 - [ ] Publish the `cm` release: `./lab/publish-cm-release.sh <owner>/<repo> <cm-linux>`
 - [ ] Set the three **WIF repo variables** (README Step 2 — plain variables,
-      identical class-wide, printed by `wif-add-students.sh`)
+      identical class-wide, printed by `wif-class-access.sh open`)
 - [ ] **Settings → Actions → General → Workflow permissions:**
       "Read and write permissions" **and**
       "Allow GitHub Actions to create and approve pull requests" — both ON.

@@ -13,8 +13,8 @@
 #   3. Sets workflow permissions to read/write + "allow PR creation".
 #   4. Verifies all three and prints a summary.
 #
-# GCP-side admission is separate: each repo also needs its roster IAM binding —
-# run lab/wif-add-students.sh with the same repo list.
+# GCP-side admission is separate and roster-free: repos named ace-module2-lab
+# are admitted whenever class access is open (lab/wif-class-access.sh open).
 #
 # Usage:
 #   ./lab/provision-student-repos.sh -b ./cm-linux owner/repo1 [owner/repo2 ...]
@@ -155,8 +155,8 @@ for R in "${REPOS[@]}"; do
   printf '  %-8s %s\n' "${RESULT[$R]}" "$R"
 done
 echo "============================================="
-echo "Remember the GCP-side roster (same repo list):"
-echo "  ./lab/wif-add-students.sh ${WIF[GCP_QUOTA_PROJECT]} ${REPOS[*]}"
+echo "GCP-side: make sure class access is open before students run:"
+echo "  ./lab/wif-class-access.sh ${WIF[GCP_QUOTA_PROJECT]} open"
 if [[ "$overall" -ne 0 ]]; then
   echo "Some repos FAILED — every step is idempotent, fix and re-run." >&2
 fi

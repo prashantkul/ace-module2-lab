@@ -7,9 +7,10 @@ is keyless Workload Identity Federation; see [`DESIGN.md`](./DESIGN.md)),
 and it makes verification a matter of opening URLs.
 
 **Before publishing, the course team fills in:** the three variable values
-(printed by `wif-add-students.sh`), and admits each student's GitHub
-username to the roster. The shared, allow-listed GCP project already exists —
-Qwiklabs provisions nothing.
+(printed by `wif-class-access.sh open`). There is no student roster —
+admission is by the **fixed repo name** `ace-module2-lab`, and the course
+team opens access before the session and closes it after. The shared,
+allow-listed GCP project already exists — Qwiklabs provisions nothing.
 
 ---
 
@@ -18,8 +19,9 @@ Qwiklabs provisions nothing.
 ### Setup — about 5 minutes
 
 1. **Create your repo.** Open the course template on GitHub → **Use this
-   template → Create a new repository**. Name it `ace-module2-lab`, owner =
-   your account, visibility = **Public**.
+   template → Create a new repository**. Name it **exactly** `ace-module2-lab`
+   (Google Cloud admits your pipeline by that name — any other name fails
+   auth), owner = your account, visibility = **Public**.
 
 2. **Add the three variables.** In your repo: **Settings → Secrets and
    variables → Actions → Variables tab → New repository variable.** Add
@@ -59,8 +61,9 @@ If something fails instead:
 
 - **Run stops at "Check WIF configuration"** → a variable is missing or
   misspelled (step 2 — Variables tab, not Secrets).
-- **Auth step fails with "unable to impersonate"** → you're not on the
-  roster yet; contact the course team with your GitHub username.
+- **Auth step fails with "unable to impersonate"** → your repo isn't named
+  exactly `ace-module2-lab`, or class access isn't open — contact the course
+  team.
 - **"not permitted to create or approve pull requests"** → step 3 was
   missed.
 
@@ -95,9 +98,10 @@ security remediation".
 
 ## Course-team notes
 
-- **Roster:** admit usernames with
-  `./lab/wif-add-students.sh <shared-project> -f roster.txt`; revoke with
-  `-r`. A repo not on the roster fails auth — that's the security boundary.
+- **Access switch:** `./lab/wif-class-access.sh <shared-project> open`
+  before the session, `close` after. While open, any repo named
+  `ace-module2-lab` is admitted — that's the deliberate trade for zero
+  per-student ops, so don't leave it open between cohorts.
 - **Template:** commit the `cm-linux` binary into the Qwiklabs template (and
   swap the release-download step for `chmod +x`) — GitHub doesn't copy
   Releases to student copies, and this removes the most confusing failure
@@ -106,5 +110,5 @@ security remediation".
   scans + 3 fix sessions per student; if a cohort throttles
   (`RESOURCE_EXHAUSTED`), add another allow-listed project per section —
   allow-listing has lead time.
-- **Teardown:** prune roster bindings after each cohort. Student repos keep
-  three harmless public variables.
+- **Teardown:** `wif-class-access.sh close` — one command. Student repos
+  keep three harmless public variables.

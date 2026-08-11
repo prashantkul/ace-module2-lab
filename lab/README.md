@@ -79,11 +79,11 @@ Credentials (ADC)** and bills its usage to the project in
 **Workload Identity Federation (WIF)**: each pipeline run mints a short-lived
 GitHub OIDC token proving *which repository* it runs for, and Google exchanges
 it for temporary CI-service-account credentials — but **only if your repo is
-on the class roster**. Nothing here is confidential; there is nothing you
-could leak.
+named exactly `ace-module2-lab`** and class access is open. Nothing here is
+confidential; there is nothing you could leak.
 
-1. **Get on the roster.** Send your instructor your **GitHub username**.
-   (They allow-list `your-username/ace-module2-lab` on the Google Cloud side.)
+1. **Check your repo name.** It must be exactly **`ace-module2-lab`** —
+   the Google Cloud side admits pipelines by that fixed name.
 2. **Set three repository *variables*** (not secrets!) — your instructor
    provides the values, which are the same for the whole class:
    go to **Settings → Secrets and variables → Actions → Variables tab →
@@ -108,9 +108,9 @@ alone lacks `serviceusage.services.use`).
 > **Fail-fast notes:**
 > - Missing/misspelled variables stop the run immediately at the
 >   **"Check WIF configuration"** step with an error pointing back here.
-> - If the variables are right but your repo isn't on the roster yet, the
->   **auth step** fails with *"unable to impersonate"* — ask your instructor
->   to add you (Step 2.1).
+> - If the variables are right but the **auth step** fails with *"unable to
+>   impersonate"*, either your repo isn't named exactly `ace-module2-lab`
+>   (Step 2.1) or class access isn't open — ask your instructor.
 
 ### Running `cm` locally instead? (sandbox accounts)
 
@@ -234,9 +234,9 @@ code? What does that imply for using one as a *blocking* deployment gate?
   (or to release + re-provision your sandbox, which now grants it
   automatically), then retry the login.
 - **"Authenticate to Google Cloud" step fails with "unable to impersonate"**
-  → your repo isn't on the class roster yet, or your `GCP_WIF_PROVIDER` /
-  `GCP_SA_EMAIL` values have a typo. Compare against the instructor handout,
-  then ask to be added (Step 2.1).
+  → your repo isn't named exactly `ace-module2-lab`, class access isn't open
+  (ask your instructor), or your `GCP_WIF_PROVIDER` / `GCP_SA_EMAIL` values
+  have a typo — compare against the instructor handout.
 - **Run stops at "Check WIF configuration"** → one of the three repo
   *variables* is missing or misspelled — the error lists which. Note they're
   under the **Variables** tab, not Secrets.
