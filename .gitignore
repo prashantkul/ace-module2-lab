@@ -77,7 +77,8 @@ cm
 cm-linux
 cm-mac
 !lab/bin/cm-linux
-*.local.txt          # instructor-only values (e.g. the WIF audience) — never commit
+# instructor-only values (e.g. the WIF audience) — never commit
+*.local.txt
 cm-security-report.json
 .codemender/
 *.cm.log
