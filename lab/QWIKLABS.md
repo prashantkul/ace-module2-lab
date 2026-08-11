@@ -6,8 +6,9 @@ GitHub repo, run the guardrail workflow, and verify four outcomes. Repos are
 is keyless Workload Identity Federation; see [`DESIGN.md`](./DESIGN.md)),
 and it makes verification a matter of opening URLs.
 
-**Before publishing, the course team fills in:** the three variable values
-(printed by `wif-class-access.sh open`). There is no student roster —
+The three variable values below are already filled in for the current
+shared project (they are also printed by `wif-class-access.sh open` —
+update them here if the project ever changes). There is no student roster —
 admission is by the **fixed repo name** `ace-module2-lab`, and the course
 team opens access before the session and closes it after. The shared,
 allow-listed GCP project already exists — Qwiklabs provisions nothing.
@@ -29,9 +30,9 @@ allow-listed GCP project already exists — Qwiklabs provisions nothing.
 
    | Name | Value |
    |---|---|
-   | `GCP_WIF_PROVIDER` | *(value from lab page)* |
-   | `GCP_SA_EMAIL` | *(value from lab page)* |
-   | `GCP_QUOTA_PROJECT` | *(value from lab page)* |
+   | `GCP_WIF_PROVIDER` | `projects/755556523613/locations/global/workloadIdentityPools/github-actions/providers/github-oidc` |
+   | `GCP_SA_EMAIL` | `codemender-ci@elevate-cm-01-rt9xt4.iam.gserviceaccount.com` |
+   | `GCP_QUOTA_PROJECT` | `elevate-cm-01-rt9xt4` |
 
 3. **Allow the pipeline to open pull requests.** **Settings → Actions →
    General → Workflow permissions:** select **Read and write permissions**
@@ -47,6 +48,26 @@ allow-listed GCP project already exists — Qwiklabs provisions nothing.
 5. **The run ends with a red ❌ — that is success.** The Security Gate found
    HIGH/CRITICAL vulnerabilities and blocked "deployment." A green run would
    mean the guardrail failed to guard.
+
+#### Triggering a run manually (or again)
+
+The pipeline runs by itself on every push to `main` that touches code
+(documentation-only changes are ignored). To start one by hand:
+
+- **In the browser:** **Actions** tab → select **CodeMender CI/CD
+  Guardrail** in the left sidebar → click the **Run workflow** dropdown on
+  the right → keep branch `main` → green **Run workflow** button. The new
+  run appears in the list a few seconds later — refresh if you don't see it.
+- **From a terminal** (if you have `gh` installed and logged in):
+
+  ```bash
+  gh workflow run codemender-pipeline.yml -R <you>/ace-module2-lab
+  gh run watch -R <you>/ace-module2-lab   # follow it live
+  ```
+
+- **To repeat a finished run** exactly as it was: open the run → **Re-run
+  all jobs** (top right). Note each run consumes shared scan quota, so
+  trigger runs deliberately rather than repeatedly.
 
 ### Verify — four checks, all in the browser
 
