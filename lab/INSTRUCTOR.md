@@ -18,6 +18,8 @@ instructions are in [`README.md`](./README.md).
 | `lab/setup-wif.sh` | One-time: workload-identity pool + GitHub OIDC provider + SA binding (keyless auth) |
 | `lab/wif-add-students.sh` | Class roster: admit/revoke student repos for SA impersonation; prints the 3-variable handout |
 | `lab/provision-student-repos.sh` | Batch-configure repos you administer (variables + release + workflow perms) |
+| `lab/DESIGN.md` | Design doc for the keyless (WIF) auth architecture |
+| `lab/QWIKLABS.md` | Porting guide for Qwiklabs / Skills Boost (per-student projects, no roster) |
 | `.github/workflows/wif-auth-test.yml` | Manual smoke test proving WIF works against the live cm backend |
 | Release `cm-cli-v0.2.0` | Holds `cm-linux` (runner; `cm-mac` optional), downloaded in CI |
 
