@@ -158,7 +158,10 @@ jobs:
           echo "Remediating top finding(s): ${{ steps.triage.outputs.fix_ids }}"
           for FID in ${{ steps.triage.outputs.fix_ids }}; do
             echo "::group::cm fix $FID"
-            cm fix "$FID" -y 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
+            # --bypass-warning: cm 0.2.0's responsibility warning must be
+            # acknowledged interactively once per machine; CI runners are
+            # fresh every run, so the session dies before fixing without it.
+            cm fix "$FID" -y --bypass-warning 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
             # In a non-interactive CI shell, `cm fix` reliably PRINTS the patch but
             # may not write it (its "Apply these changes? [y/N]" prompt reads EOF).
             # Extract the printed diff and apply it ONLY if it applies cleanly — so
