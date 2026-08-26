@@ -54,6 +54,13 @@ permissions:
 env:
   # Scoped scan target. Kept well under cm's ~10 MB per-scan upload limit and
   # contains the canonical CRITICAL finding (SQL injection in routes/login.ts).
+  # cm also uses this as its read sandbox, so "SANDBOX VIOLATION ... blocked"
+  # lines in the scan log are EXPECTED and benign — the agent tried to follow
+  # an import outside routes/ (e.g. ../lib) and was denied; the scan continues.
+  # Keeping the sandbox tight = shorter, cheaper scans. To widen context later:
+  # `cm find` accepts repeated --allowed-roots <dir> flags (never pass the repo
+  # root — the WIF credential file gha-creds-*.json lands there and anything
+  # in-sandbox is uploadable by the agent).
   SCAN_PATH: routes
   # The `cm` binary ships vendored in the repo, so template copies work with
   # zero extra setup (GitHub does NOT copy Releases on fork/template — a
