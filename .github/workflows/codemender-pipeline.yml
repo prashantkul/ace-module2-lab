@@ -223,7 +223,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           base: main
-          branch: codemender/auto-remediation
+          branch: codemender/auto-remediation-testrun
           delete-branch: true
           add-paths: |
             ${{ env.SCAN_PATH }}/**
