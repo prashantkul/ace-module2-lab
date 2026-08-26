@@ -17,6 +17,27 @@ import * as utils from '../lib/utils'
 
 const entities = new Entities()
 
+function isSafeCode (code: string): boolean {
+  if (typeof code !== 'string') {
+    return false
+  }
+
+  // Block '$' to completely prevent template literal interpolation and other jQuery/variable access.
+  if (code.includes('$')) {
+    return false
+  }
+
+  // Strip all single-quoted strings, double-quoted strings, and template literals.
+  let simplified = code
+  simplified = simplified.replace(/'([^'\\]|\\.)*'/g, '')
+  simplified = simplified.replace(/"([^"\\]|\\.)*"/g, '')
+  simplified = simplified.replace(/`([^`\\]|\\.)*`/g, '')
+
+  // The simplified code must only contain digits, '+', and whitespace.
+  const safePattern = /^[0-9+\s]*$/
+  return safePattern.test(simplified)
+}
+
 function favicon () {
   return utils.extractFilename(config.get('application.favicon'))
 }
@@ -57,6 +78,9 @@ export function getUserProfile () {
       try {
         if (!code) {
           throw new Error('Username is null')
+        }
+        if (!isSafeCode(code)) {
+          throw new Error('Unsafe code execution blocked')
         }
         username = eval(code) // eslint-disable-line no-eval
       } catch (err) {
