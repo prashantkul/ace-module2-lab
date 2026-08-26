@@ -179,14 +179,30 @@ jobs:
           echo "Remediating top finding(s): ${{ steps.triage.outputs.fix_ids }}"
           for FID in ${{ steps.triage.outputs.fix_ids }}; do
             echo "::group::cm fix $FID"
+            # Run cm from INSIDE $SCAN_PATH. cm records each finding's path
+            # relative to the scan root it was found under — usually a bare
+            # basename ("search.ts") — but `cm fix` stats that path against the
+            # process CWD. From the repo root that resolves to ./search.ts,
+            # which doesn't exist, and cm dies in milliseconds with
+            #   Error: acquiring write lock on search.ts: stat search.ts: ...
+            # producing no patch and therefore an empty remediation PR branch.
+            # cd'ing in makes the relative form resolve; findings that stored an
+            # absolute path instead (cm is inconsistent) work either way.
             # --bypass-warning: cm 0.2.0's responsibility warning must be
             # acknowledged interactively once per machine; CI runners are
             # fresh every run, so the session dies before fixing without it.
-            cm fix "$FID" -y --bypass-warning 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
+            ( cd "$SCAN_PATH" && cm fix "$FID" -y --bypass-warning ) 2>&1 \
+              | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
+            # Surface a path-resolution failure on its own — otherwise it is
+            # indistinguishable from success in the "no clean diff" branch below.
+            if grep -q "acquiring write lock" "$RUNNER_TEMP/fix-$FID.cm.log"; then
+              echo "::warning title=cm fix could not open the target file::$FID — cm could not resolve its recorded file path from $SCAN_PATH; no patch was produced for this finding."
+            fi
             # In a non-interactive CI shell, `cm fix` reliably PRINTS the patch but
             # may not write it (its "Apply these changes? [y/N]" prompt reads EOF).
             # Extract the printed diff and apply it ONLY if it applies cleanly — so
-            # this is a no-op when cm already wrote the file itself.
+            # this is a no-op when cm already wrote the file itself. cm prints diff
+            # paths relative to the scan root (a/search.ts), hence --directory below.
             python3 .github/scripts/extract_cm_diff.py "$RUNNER_TEMP/fix-$FID.cm.log" > "$RUNNER_TEMP/fix-$FID.patch" || true
             if [ -s "$RUNNER_TEMP/fix-$FID.patch" ] \
                && git apply --check -p1 --directory="$SCAN_PATH" "$RUNNER_TEMP/fix-$FID.patch" 2>/dev/null; then
