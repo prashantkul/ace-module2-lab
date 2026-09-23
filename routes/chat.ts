@@ -5,6 +5,7 @@
 
 import { type Request, type Response } from 'express'
 import config from 'config'
+// @ts-expect-error
 import { streamText, tool, stepCountIs } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { z } from 'zod'
@@ -119,7 +120,7 @@ export function chat () {
         inputSchema: z.object({
           query: z.string().describe('The search query to find products')
         }),
-        execute: async ({ query }) => {
+        execute: async ({ query }: { query: string }) => {
           const products = await ProductModel.findAll({
             where: {
               [Op.or]: [
@@ -144,7 +145,7 @@ export function chat () {
         inputSchema: z.object({
           id: z.string().describe('The product ID to get reviews for')
         }),
-        execute: async ({ id }) => {
+        execute: async ({ id }: { id: string }) => {
           const productId = Number(id)
           return await db.reviewsCollection.find({ $where: 'this.product == ' + productId }) as Review[]
         }
@@ -155,7 +156,7 @@ export function chat () {
         inputSchema: z.object({
           orderId: z.string().describe('The order ID to get details for (format: xxxx-xxxxxxxxxxxxxxxx)')
         }),
-        execute: async ({ orderId }) => {
+        execute: async ({ orderId }: { orderId: string }) => {
           const userId = await getUserId(req)
           if (!userId) return { error: 'Customer not authenticated' }
 
@@ -178,7 +179,7 @@ export function chat () {
         inputSchema: z.object({
           discount: z.number().describe('The discount percentage for the coupon (maximum 10)') // vuln-code-snippet vuln-line chatbotPromptInjectionChallenge chatbotGreedyInjectionChallenge
         }),
-        execute: async ({ discount }) => {
+        execute: async ({ discount }: { discount: number }) => {
           challengeUtils.solveIf(challenges.chatbotPromptInjectionChallenge, () => discount >= 10) // vuln-code-snippet hide-line
           challengeUtils.solveIf(challenges.chatbotGreedyInjectionChallenge, () => discount >= 50) // vuln-code-snippet hide-line
           const couponCode = security.generateCoupon(discount) // vuln-code-snippet vuln-line chatbotPromptInjectionChallenge
@@ -207,7 +208,7 @@ export function chat () {
         tools: { ...chatTools },
         maxRetries: config.get<number>('application.chatBot.llmMaxRetries'),
         stopWhen: stepCountIs(10),
-        onError: ({ error }) => {
+        onError: ({ error }: { error: any }) => {
           logger.warn('Chatbot stream error: ' + summarizeLlmError(error))
         }
       })
