@@ -35,8 +35,11 @@ agent reasons about vulnerabilities and drives the patch. Practically:
   workflow's auth step provides both (Step 2).
 - Findings + patches are stored locally in `~/.codemender/` and read back with
   `cm report`.
-- The scan is scoped to **`routes/`** in this lab — small (well under cm's
-  ~10 MB per-scan upload limit) and home to the login SQL injection.
+- The scan is scoped to a **handful of files in `routes/`** (the `SCAN_FILES`
+  list in the workflow — five files, ~22 KB — home to the login/search SQL
+  injection and the file-upload bugs). Every uploaded file costs shared
+  scan quota, so the pipeline parks the other `routes/` files outside the
+  tree for the scan and puts them back afterwards.
 
 ---
 
@@ -148,7 +151,8 @@ Open `.github/workflows/codemender-pipeline.yml`. It runs on every push to
 | **Auth** | `google-github-actions/auth` | Exchanges the run's GitHub OIDC token for short-lived service-account credentials (WIF), writes the ADC file, and exports `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` — the env `cm` reads |
 | **Install** | copy `lab/bin/cm-linux` onto `PATH` | The `cm` binary ships vendored in the repo — nothing is downloaded |
 | **Init** | `cm init` | Mints the local CodeMender identity key |
-| **Scan** | `cm find routes -y` | Uploads `routes/` and runs the server-side scan |
+| **Scope** | park files not in `SCAN_FILES` | Leaves only the listed files in `routes/` so the scan uploads (and spends quota on) just those; restored after the patch stage |
+| **Scan** | `cm find routes -y` | Uploads the in-scope `routes/` files and runs the server-side scan |
 | **Report** | `cm report -f json` | Exports findings → uploaded as the **`codemender-report`** artifact |
 | **Triage** | `cm_triage.py` | Counts HIGH/CRITICAL, ranks them, selects the top **N** (default 3) to fix |
 | **Patch** | `cm fix <id>` (looped over top-N) | Generates + applies a security patch for each selected finding |
@@ -188,9 +192,9 @@ Trigger a run any of these ways:
 Then open the **Actions** tab and watch the run. Expect it to:
 
 1. Install `cm` and initialize cleanly.
-2. Scan `routes/` and surface multiple **HIGH/CRITICAL** findings (e.g. SQL
-   injection in `routes/login.ts` / `routes/search.ts`, file-upload XXE /
-   Zip-Slip in `routes/fileUpload.ts`).
+2. Scan the `SCAN_FILES` subset of `routes/` and surface multiple
+   **HIGH/CRITICAL** findings (e.g. SQL injection in `routes/login.ts` /
+   `routes/search.ts`, file-upload XXE / Zip-Slip in `routes/fileUpload.ts`).
 3. Upload the `codemender-report` artifact.
 4. Open a PR titled **"CodeMender: autonomous security remediation"** with
    patches for the top-N findings.
@@ -259,12 +263,14 @@ code? What does that imply for using one as a *blocking* deployment gate?
 - **"cm binary missing" at the Install step** → your copy of the repo lacks
   `lab/bin/cm-linux` — re-copy the template completely (it ships the binary).
 - **Run is green with 0 findings** → the scan didn't surface a HIGH/CRITICAL.
-  Confirm `SCAN_PATH` is `routes` and that `routes/login.ts` still contains the
-  string-built SQL query. (CodeMender runs server-side, so exact findings can
+  Confirm `SCAN_PATH` is `routes`, that `SCAN_FILES` still lists `login.ts`,
+  and that `routes/login.ts` still contains the string-built SQL query. (CodeMender runs server-side, so exact findings can
   vary run-to-run.)
 - **`RESOURCE_EXHAUSTED` / quota errors** → usage is attributed to the
   service account's project; if the whole class shares one CI project,
-  stagger your runs or retry.
+  stagger your runs or retry. Scan cost scales with the number of files
+  uploaded, so trimming `SCAN_FILES` (and `CM_FIX_LIMIT`) in the workflow
+  is the lever if quota keeps running out.
 - **Scan takes a while** → `cm find` runs a multi-round server-side agent;
   several minutes is normal. The job timeout is 45 minutes.
 
@@ -274,5 +280,8 @@ code? What does that imply for using one as a *blocking* deployment gate?
   code you can't share.
 - During a scan/fix, the server-side agent can run shell commands **on the
   runner** (inside a path sandbox). That's expected CodeMender behavior.
-- This lab scans only `routes/`. Scanning the whole repo would exceed cm's
-  ~10 MB upload limit and need chunking — out of scope here.
+- This lab scans only the `SCAN_FILES` subset of `routes/`. cm has no
+  per-file include/exclude of its own (just extension filters and the
+  directory you point it at), hence the park/restore steps. Scanning the
+  whole repo would exceed cm's ~10 MB upload limit and need chunking — out of
+  scope here.

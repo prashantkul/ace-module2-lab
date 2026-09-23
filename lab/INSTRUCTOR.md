@@ -214,9 +214,13 @@ gh pr list --repo "$R" --head codemender/auto-remediation \
 
 ## 4. Expected findings (so you know what "correct" looks like)
 
-Scanning `routes/` reliably yields **~9–11 HIGH/CRITICAL** findings. The exact
+The pipeline scans only the files listed in the workflow's `SCAN_FILES`
+(default: `login.ts search.ts fileUpload.ts userProfile.ts dataErasure.ts`) —
+scanning all 61 files in `routes/` yielded ~9–11 HIGH/CRITICAL findings but
+burned the class-shared quota; the subset still surfaces several. The exact
 set + ranking vary (server-side, non-deterministic); the pipeline auto-fixes the
-top **N** (default 3, set by `CM_FIX_LIMIT`). The common ones:
+top **N** (default 3, set by `CM_FIX_LIMIT`). To cut quota use further, trim
+`SCAN_FILES` and/or lower `CM_FIX_LIMIT`. The common ones:
 
 - **SQL injection** in `routes/login.ts` / `routes/search.ts` — a string-built
   `sequelize.query(...)`. Correct fix = a **parameterized query** with bind
