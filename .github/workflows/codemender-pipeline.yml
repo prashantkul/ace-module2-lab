@@ -5,8 +5,9 @@ name: CodeMender CI/CD Guardrail
 # CodeMender (the `cm` CLI), wired as a CI/CD deployment guardrail.
 #
 # Flow (one push to main demonstrates all four grading criteria):
-#   checkout -> install cm -> cm init -> cm find (scan, UPLOADS source)
-#     -> cm report -f json (artifact) -> triage -> cm fix (auto-patch)
+#   checkout -> install cm -> cm init -> narrow scope (park unlisted files)
+#     -> cm find (scan, UPLOADS source) -> cm report -f json (artifact)
+#     -> triage -> cm fix (auto-patch) -> restore parked files
 #     -> open remediation PR -> SECURITY GATE (fail red on HIGH/CRITICAL)
 #
 # Auth (KEYLESS — Workload Identity Federation; see lab/README.md Step 2):
@@ -52,8 +53,7 @@ permissions:
   id-token: write          # mint the GitHub OIDC token WIF exchanges for GCP creds
 
 env:
-  # Scoped scan target. Kept well under cm's ~10 MB per-scan upload limit and
-  # contains the canonical CRITICAL finding (SQL injection in routes/login.ts).
+  # Scan root (a flat directory — `cm fix` relies on that, see the fix step).
   # cm also uses this as its read sandbox, so "SANDBOX VIOLATION ... blocked"
   # lines in the scan log are EXPECTED and benign — the agent tried to follow
   # an import outside routes/ (e.g. ../lib) and was denied; the scan continues.
@@ -62,6 +62,19 @@ env:
   # root — the WIF credential file gha-creds-*.json lands there and anything
   # in-sandbox is uploadable by the agent).
   SCAN_PATH: routes
+  # Which files under SCAN_PATH are actually scanned (space-separated
+  # basenames). QUOTA CONTROL: every uploaded file costs server-side agent
+  # rounds against the class-shared Vertex AI quota, and routes/ holds 61
+  # files (~300 KB) while the findings the lab needs live in a handful of
+  # them. cm has no per-file include/exclude (only extension filters and the
+  # directory you point it at), so the "Narrow scan scope" step temporarily
+  # moves every OTHER file out of SCAN_PATH for the scan + fix steps and the
+  # "Restore unscanned files" step moves them back. Add/remove basenames here
+  # to change the scope; each one must exist in SCAN_PATH. The default five
+  # (~22 KB) carry the canonical findings: SQL injection (login.ts,
+  # search.ts), XXE / Zip-Slip / YAML-DoS (fileUpload.ts), server-side
+  # template injection + eval (userProfile.ts), path traversal (dataErasure.ts).
+  SCAN_FILES: "login.ts search.ts fileUpload.ts userProfile.ts dataErasure.ts"
   # The `cm` binary ships vendored in the repo, so template copies work with
   # zero extra setup (GitHub does NOT copy Releases on fork/template — a
   # release-download step here broke every student copy).
@@ -141,11 +154,47 @@ jobs:
           cm init --verify || echo "::warning::cm init --verify reported problems (see log above)."
           ls -la "$HOME/.codemender/" 2>/dev/null || echo "::warning::~/.codemender was not created by cm init."
 
+      # Park every file in SCAN_PATH that is NOT listed in SCAN_FILES so that
+      # `cm find` only uploads (and spends quota on) the listed files. The
+      # parked files come back in "Restore unscanned files" below, which runs
+      # even when the scan or fix fails; and the PR step only ever adds the
+      # listed files, so a parked file can never show up as a deletion in the
+      # remediation PR. Everything else in the pipeline (fix path resolution,
+      # diff extraction, sandbox) is unchanged — cm still scans SCAN_PATH.
+      - name: Narrow scan scope (park unscanned files)
+        id: scope
+        run: |
+          set -euo pipefail
+          PARK="$RUNNER_TEMP/parked-$(basename "$SCAN_PATH")"
+          mkdir -p "$PARK"
+          # Validate the list BEFORE moving anything, so a typo fails cleanly.
+          ADD_PATHS=""
+          for F in $SCAN_FILES; do
+            if [ ! -f "$SCAN_PATH/$F" ]; then
+              echo "::error title=SCAN_FILES entry missing::$SCAN_PATH/$F does not exist — fix the SCAN_FILES list in the workflow env block."
+              exit 1
+            fi
+            ADD_PATHS="$ADD_PATHS$SCAN_PATH/$F"$'\n'
+          done
+          # Record the park dir first so the restore step runs even if a move fails.
+          echo "park_dir=$PARK" >> "$GITHUB_OUTPUT"
+          { echo "add_paths<<__CM_EOF__"; printf '%s' "$ADD_PATHS"; echo "__CM_EOF__"; } >> "$GITHUB_OUTPUT"
+          KEPT=0; PARKED=0
+          for P in "$SCAN_PATH"/*; do
+            F="$(basename "$P")"
+            case " $SCAN_FILES " in
+              *" $F "*) KEPT=$((KEPT + 1)) ;;
+              *)        mv "$P" "$PARK/"; PARKED=$((PARKED + 1)) ;;
+            esac
+          done
+          echo "Scan scope: $KEPT file(s) kept in $SCAN_PATH/, $PARKED parked in $PARK (restored after the fix step)."
+          ls -la "$SCAN_PATH"
+
       - name: CodeMender Scan (cm find)
         id: scan
         run: |
           set -uo pipefail
-          echo "Scanning '$SCAN_PATH' (in-scope source is uploaded to Google's CodeMender service)..."
+          echo "Scanning '$SCAN_PATH' — files: $SCAN_FILES (in-scope source is uploaded to Google's CodeMender service)..."
           cm find "$SCAN_PATH" -y 2>&1 | tee "$RUNNER_TEMP/cm-find.cm.log"
 
       - name: Export Security Report (cm report -f json)
@@ -213,6 +262,18 @@ jobs:
             fi
             echo "::endgroup::"
           done
+
+      # Counterpart of "Narrow scan scope": put the parked files back so the
+      # working tree differs from HEAD only by cm's patches. Runs on failure
+      # too (the PR step below only adds SCAN_FILES regardless).
+      - name: Restore unscanned files
+        if: ${{ always() && steps.scope.outputs.park_dir != '' }}
+        run: |
+          set -euo pipefail
+          PARK="${{ steps.scope.outputs.park_dir }}"
+          find "$PARK" -mindepth 1 -maxdepth 1 -exec mv -t "$SCAN_PATH/" {} +
+          rmdir "$PARK"
+          echo "Restored parked files; $SCAN_PATH/ now holds $(ls "$SCAN_PATH" | wc -l) file(s)."
           echo "----- working-tree changes under $SCAN_PATH -----"
           git status --porcelain -- "$SCAN_PATH" || true
 
@@ -225,8 +286,10 @@ jobs:
           base: main
           branch: codemender/auto-remediation
           delete-branch: true
+          # Only the scanned files — never the whole directory, so a parked
+          # file can't be committed as a deletion if the restore step misbehaved.
           add-paths: |
-            ${{ env.SCAN_PATH }}/**
+            ${{ steps.scope.outputs.add_paths }}
           commit-message: |
             fix(security): CodeMender autonomous remediation
 
@@ -239,7 +302,8 @@ jobs:
           body: |
             ## 🤖 Autonomous remediation by CodeMender
 
-            CodeMender's CI/CD guardrail scanned `${{ env.SCAN_PATH }}` and found
+            CodeMender's CI/CD guardrail scanned `${{ env.SCAN_PATH }}`
+            (files: `${{ env.SCAN_FILES }}`) and found
             **${{ steps.triage.outputs.high_critical }} HIGH/CRITICAL** finding(s).
             This PR auto-remediates the top **${{ steps.triage.outputs.fix_count }}** via `cm fix`:
 
